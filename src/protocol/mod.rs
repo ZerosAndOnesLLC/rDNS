@@ -8,7 +8,5 @@ pub mod record;
 
 pub use header::Header;
 pub use message::Message;
-pub use name::DnsName;
 pub use opcode::Opcode;
 pub use rcode::Rcode;
-pub use record::{RecordClass, RecordType, ResourceRecord};

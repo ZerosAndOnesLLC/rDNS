@@ -1,3 +1,4 @@
+use crate::cache::CacheStore;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
@@ -5,7 +6,7 @@ use tokio::net::UdpSocket;
 const MAX_UDP_RECV: usize = 4096;
 
 /// Serve DNS queries over UDP on the given address.
-pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
+pub async fn serve(addr: SocketAddr, cache: CacheStore) -> anyhow::Result<()> {
     let socket = UdpSocket::bind(addr).await?;
     tracing::info!(%addr, "UDP listener bound");
 
@@ -15,12 +16,9 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
         let (len, src) = socket.recv_from(&mut buf).await?;
 
         let query_data = buf[..len].to_vec();
-        let socket_ref = &socket;
+        let response = super::handle_query(&query_data, &cache);
 
-        // Process inline for now — will move to a task pool later for production
-        let response = super::handle_query(&query_data);
-
-        if let Err(e) = socket_ref.send_to(&response, src).await {
+        if let Err(e) = socket.send_to(&response, src).await {
             tracing::warn!(%src, error = %e, "Failed to send UDP response");
         }
     }

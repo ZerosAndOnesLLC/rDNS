@@ -1,16 +1,30 @@
+use crate::cache::CacheStore;
 use crate::config::Config;
 use crate::listener;
+use std::time::Duration;
 use tokio::signal;
 use tracing::info;
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
+    // Initialize cache
+    let cache = CacheStore::new(
+        cfg.cache.max_entries,
+        cfg.cache.min_ttl,
+        cfg.cache.max_ttl,
+        cfg.cache.negative_ttl,
+    );
+
+    // Spawn cache expiry background task (sweep every 60s)
+    let _expiry_handle = cache.clone().spawn_expiry_task(Duration::from_secs(60));
+
     let mut handles = Vec::new();
 
     // Start UDP listeners
     for addr in &cfg.listeners.udp {
         let addr = *addr;
+        let cache = cache.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::udp::serve(addr).await {
+            if let Err(e) = listener::udp::serve(addr, cache).await {
                 tracing::error!(%addr, error = %e, "UDP listener failed");
             }
         }));
@@ -20,8 +34,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Start TCP listeners
     for addr in &cfg.listeners.tcp {
         let addr = *addr;
+        let cache = cache.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr).await {
+            if let Err(e) = listener::tcp::serve(addr, cache).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));
