@@ -35,6 +35,13 @@ impl DnsName {
         Self { labels: Vec::new() }
     }
 
+    /// Create a name from a slice of labels.
+    pub fn from_labels(labels: &[String]) -> Self {
+        Self {
+            labels: labels.iter().map(|l| l.to_ascii_lowercase()).collect(),
+        }
+    }
+
     /// Create a name from a dotted string (e.g., "www.example.com" or "www.example.com.").
     pub fn from_str(s: &str) -> Result<Self, NameError> {
         let s = s.strip_suffix('.').unwrap_or(s);

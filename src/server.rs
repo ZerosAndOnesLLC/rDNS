@@ -1,5 +1,6 @@
+use crate::auth::{AuthEngine, ZoneCatalog};
 use crate::cache::CacheStore;
-use crate::config::{Config, ServerMode};
+use crate::config::{AuthSource, Config, ServerMode};
 use crate::listener;
 use crate::resolver::Resolver;
 use std::net::SocketAddr;
@@ -25,7 +26,6 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         .forwarders
         .iter()
         .filter_map(|s| {
-            // Support formats: "1.1.1.1", "1.1.1.1:53"
             if s.contains(':') {
                 s.parse().ok()
             } else {
@@ -36,14 +36,27 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
     // Create resolver (used in resolver and both modes)
     let resolver = match cfg.server.mode {
-        ServerMode::Resolver | ServerMode::Both => {
-            Some(Resolver::new(
-                cache.clone(),
-                forwarders,
-                cfg.resolver.max_recursion_depth,
-            ))
-        }
+        ServerMode::Resolver | ServerMode::Both => Some(Resolver::new(
+            cache.clone(),
+            forwarders,
+            cfg.resolver.max_recursion_depth,
+        )),
         ServerMode::Authoritative => None,
+    };
+
+    // Create authoritative engine (used in authoritative and both modes)
+    let auth_engine = match cfg.server.mode {
+        ServerMode::Authoritative | ServerMode::Both => {
+            let catalog = ZoneCatalog::new();
+
+            if cfg.authoritative.source == AuthSource::ZoneFiles {
+                let count = catalog.load_directory(&cfg.authoritative.directory)?;
+                info!(zones = count, "Loaded zone files");
+            }
+
+            Some(AuthEngine::new(catalog))
+        }
+        ServerMode::Resolver => None,
     };
 
     let mut handles = Vec::new();
@@ -53,8 +66,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let addr = *addr;
         let resolver = resolver.clone();
         let cache = cache.clone();
+        let auth = auth_engine.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::udp::serve(addr, cache, resolver).await {
+            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth).await {
                 tracing::error!(%addr, error = %e, "UDP listener failed");
             }
         }));
@@ -66,8 +80,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let addr = *addr;
         let resolver = resolver.clone();
         let cache = cache.clone();
+        let auth = auth_engine.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr, cache, resolver).await {
+            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));
@@ -76,7 +91,6 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
     info!("rDNS ready");
 
-    // Wait for shutdown signal
     shutdown_signal().await;
     info!("Shutting down");
 

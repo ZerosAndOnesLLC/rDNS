@@ -1,14 +1,15 @@
+use crate::auth::AuthEngine;
 use crate::cache::CacheStore;
 use crate::resolver::Resolver;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Serve DNS queries over TCP on the given address.
 pub async fn serve(
     addr: SocketAddr,
     cache: CacheStore,
     resolver: Option<Resolver>,
+    auth: Option<AuthEngine>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, "TCP listener bound");
@@ -17,7 +18,8 @@ pub async fn serve(
         let (stream, src) = listener.accept().await?;
         let cache = cache.clone();
         let resolver = resolver.clone();
-        tokio::spawn(handle_connection(stream, src, cache, resolver));
+        let auth = auth.clone();
+        tokio::spawn(handle_connection(stream, src, cache, resolver, auth));
     }
 }
 
@@ -26,8 +28,9 @@ async fn handle_connection(
     src: SocketAddr,
     cache: CacheStore,
     resolver: Option<Resolver>,
+    auth: Option<AuthEngine>,
 ) {
-    if let Err(e) = handle_connection_inner(&mut stream, src, &cache, &resolver).await {
+    if let Err(e) = handle_connection_inner(&mut stream, src, &cache, &resolver, &auth).await {
         tracing::debug!(%src, error = %e, "TCP connection error");
     }
 }
@@ -37,13 +40,12 @@ async fn handle_connection_inner(
     src: SocketAddr,
     cache: &CacheStore,
     resolver: &Option<Resolver>,
+    auth: &Option<AuthEngine>,
 ) -> anyhow::Result<()> {
     loop {
         let len = match stream.read_u16().await {
             Ok(len) => len as usize,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(());
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e.into()),
         };
 
@@ -54,12 +56,9 @@ async fn handle_connection_inner(
         let mut buf = vec![0u8; len];
         stream.read_exact(&mut buf).await?;
 
-        tracing::debug!(%src, bytes = len, "TCP query received");
+        let response = super::handle_query(&buf, cache, resolver, auth).await;
 
-        let response = super::handle_query(&buf, cache, resolver).await;
-
-        let resp_len = response.len() as u16;
-        stream.write_u16(resp_len).await?;
+        stream.write_u16(response.len() as u16).await?;
         stream.write_all(&response).await?;
         stream.flush().await?;
     }

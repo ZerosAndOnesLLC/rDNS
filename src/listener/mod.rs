@@ -1,6 +1,7 @@
 pub mod tcp;
 pub mod udp;
 
+use crate::auth::engine::{AuthEngine, AuthResult};
 use crate::cache::entry::CacheKey;
 use crate::cache::CacheStore;
 use crate::protocol::rcode::Rcode;
@@ -8,8 +9,13 @@ use crate::protocol::{Header, Message};
 use crate::resolver::Resolver;
 
 /// Process an incoming DNS query and produce a response.
-/// Uses resolver if available, otherwise returns from cache or SERVFAIL.
-async fn handle_query(buf: &[u8], cache: &CacheStore, resolver: &Option<Resolver>) -> Vec<u8> {
+/// Routes between authoritative engine and resolver based on available components.
+async fn handle_query(
+    buf: &[u8],
+    cache: &CacheStore,
+    resolver: &Option<Resolver>,
+    auth: &Option<AuthEngine>,
+) -> Vec<u8> {
     match Message::decode(buf) {
         Ok(query) => {
             tracing::debug!(
@@ -19,7 +25,21 @@ async fn handle_query(buf: &[u8], cache: &CacheStore, resolver: &Option<Resolver
             );
 
             if let Some(q) = query.questions.first() {
-                // If we have a resolver, use it (it checks cache internally)
+                // Try authoritative engine first
+                if let Some(auth_engine) = auth {
+                    match auth_engine.query(&q.name, q.qtype, q.qclass) {
+                        AuthResult::Answer(mut response) => {
+                            response.header.id = query.header.id;
+                            response.header.rd = query.header.rd;
+                            return response.encode();
+                        }
+                        AuthResult::NotAuthoritative => {
+                            // Fall through to resolver
+                        }
+                    }
+                }
+
+                // Try resolver
                 if let Some(resolver) = resolver {
                     let mut response = resolver.resolve(&q.name, q.qtype, q.qclass).await;
                     response.header.id = query.header.id;
@@ -42,7 +62,11 @@ async fn handle_query(buf: &[u8], cache: &CacheStore, resolver: &Option<Resolver
                             ra: false,
                             ad: false,
                             cd: false,
-                            rcode: if entry.negative { Rcode::NxDomain } else { Rcode::NoError },
+                            rcode: if entry.negative {
+                                Rcode::NxDomain
+                            } else {
+                                Rcode::NoError
+                            },
                             qd_count: query.header.qd_count,
                             an_count: entry.answers.len() as u16,
                             ns_count: entry.authority.len() as u16,
@@ -57,7 +81,6 @@ async fn handle_query(buf: &[u8], cache: &CacheStore, resolver: &Option<Resolver
                 }
             }
 
-            // No cache hit, no resolver — SERVFAIL
             Message::servfail(&query).encode()
         }
         Err(e) => {

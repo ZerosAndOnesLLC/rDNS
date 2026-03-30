@@ -1,0 +1,36 @@
+$TTL 3600
+$ORIGIN example.com.
+
+; SOA Record
+@   IN  SOA ns1.example.com. admin.example.com. (
+        2024010101  ; Serial
+        3600        ; Refresh
+        900         ; Retry
+        604800      ; Expire
+        300         ; Negative TTL
+    )
+
+; Name Servers
+@   IN  NS  ns1.example.com.
+@   IN  NS  ns2.example.com.
+
+; A Records
+@       IN  A   93.184.216.34
+www     IN  A   93.184.216.34
+mail    IN  A   93.184.216.35
+
+; AAAA Records
+@       IN  AAAA    2606:2800:220:1:248:1893:25c8:1946
+
+; MX Records
+@       IN  MX  10  mail.example.com.
+
+; CNAME Records
+ftp     IN  CNAME   www.example.com.
+
+; TXT Records
+@       IN  TXT "v=spf1 include:_spf.example.com ~all"
+
+; NS Glue Records
+ns1     IN  A   192.0.2.1
+ns2     IN  A   192.0.2.2
