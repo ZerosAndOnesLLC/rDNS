@@ -109,6 +109,30 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         }
     }
 
+    // Start control socket
+    {
+        let control = crate::control::ControlServer::new(cache.clone());
+        let socket_path = cfg.control.socket.clone();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = control.serve(&socket_path).await {
+                tracing::error!(error = %e, "Control socket failed");
+            }
+        }));
+        info!(path = %cfg.control.socket.display(), "Control socket started");
+    }
+
+    // Start Prometheus metrics endpoint
+    if cfg.metrics.enabled {
+        let addr = cfg.metrics.address;
+        let cache = cache.clone();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = crate::metrics::serve(addr, cache).await {
+                tracing::error!(%addr, error = %e, "Metrics endpoint failed");
+            }
+        }));
+        info!(addr = %cfg.metrics.address, "Prometheus metrics endpoint started");
+    }
+
     info!("rDNS ready");
 
     shutdown_signal().await;

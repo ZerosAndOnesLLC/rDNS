@@ -1,8 +1,10 @@
 mod auth;
 mod cache;
 mod config;
+mod control;
 mod dnssec;
 mod listener;
+mod metrics;
 mod rpz;
 mod protocol;
 mod resolver;
