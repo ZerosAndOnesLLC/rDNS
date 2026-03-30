@@ -3,6 +3,7 @@ mod cache;
 mod config;
 mod dnssec;
 mod listener;
+mod rpz;
 mod protocol;
 mod resolver;
 mod server;
