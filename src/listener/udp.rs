@@ -1,6 +1,7 @@
 use crate::auth::AuthEngine;
 use crate::cache::CacheStore;
 use crate::resolver::Resolver;
+use crate::rpz::RpzEngine;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
@@ -11,6 +12,7 @@ pub async fn serve(
     cache: CacheStore,
     resolver: Option<Resolver>,
     auth: Option<AuthEngine>,
+    rpz: RpzEngine,
 ) -> anyhow::Result<()> {
     let socket = UdpSocket::bind(addr).await?;
     tracing::info!(%addr, "UDP listener bound");
@@ -21,7 +23,7 @@ pub async fn serve(
         let (len, src) = socket.recv_from(&mut buf).await?;
 
         let query_data = buf[..len].to_vec();
-        let response = super::handle_query(&query_data, &cache, &resolver, &auth).await;
+        let response = super::handle_query(&query_data, &cache, &resolver, &auth, &rpz).await;
 
         if let Err(e) = socket.send_to(&response, src).await {
             tracing::warn!(%src, error = %e, "Failed to send UDP response");

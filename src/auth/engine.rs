@@ -26,10 +26,6 @@ impl AuthEngine {
         Self { catalog }
     }
 
-    pub fn catalog(&self) -> &ZoneCatalog {
-        &self.catalog
-    }
-
     /// Process an authoritative query.
     pub fn query(&self, name: &DnsName, rtype: RecordType, rclass: RecordClass) -> AuthResult {
         // Find the authoritative zone for this name

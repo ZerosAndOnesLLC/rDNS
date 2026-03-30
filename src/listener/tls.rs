@@ -1,6 +1,7 @@
 use crate::auth::AuthEngine;
 use crate::cache::CacheStore;
 use crate::resolver::Resolver;
+use crate::rpz::RpzEngine;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -38,13 +39,13 @@ pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<T
 }
 
 /// Serve DNS-over-TLS (RFC 7858) on the given address.
-/// Uses the same 2-byte length prefix framing as TCP DNS.
 pub async fn serve(
     addr: SocketAddr,
     acceptor: TlsAcceptor,
     cache: CacheStore,
     resolver: Option<Resolver>,
     auth: Option<AuthEngine>,
+    rpz: RpzEngine,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, "DNS-over-TLS listener bound");
@@ -55,12 +56,13 @@ pub async fn serve(
         let cache = cache.clone();
         let resolver = resolver.clone();
         let auth = auth.clone();
+        let rpz = rpz.clone();
 
         tokio::spawn(async move {
             match acceptor.accept(stream).await {
                 Ok(tls_stream) => {
                     if let Err(e) =
-                        handle_tls_connection(tls_stream, src, &cache, &resolver, &auth).await
+                        handle_tls_connection(tls_stream, &cache, &resolver, &auth, &rpz).await
                     {
                         tracing::debug!(%src, error = %e, "DoT connection error");
                     }
@@ -75,12 +77,11 @@ pub async fn serve(
 
 async fn handle_tls_connection(
     mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-    src: SocketAddr,
     cache: &CacheStore,
     resolver: &Option<Resolver>,
     auth: &Option<AuthEngine>,
+    rpz: &RpzEngine,
 ) -> anyhow::Result<()> {
-    // Same framing as TCP: 2-byte length prefix per message
     loop {
         let len = match stream.read_u16().await {
             Ok(len) => len as usize,
@@ -95,9 +96,7 @@ async fn handle_tls_connection(
         let mut buf = vec![0u8; len];
         stream.read_exact(&mut buf).await?;
 
-        tracing::debug!(%src, bytes = len, "DoT query received");
-
-        let response = super::handle_query(&buf, cache, resolver, auth).await;
+        let response = super::handle_query(&buf, cache, resolver, auth, rpz).await;
 
         stream.write_u16(response.len() as u16).await?;
         stream.write_all(&response).await?;

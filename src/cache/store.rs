@@ -107,6 +107,7 @@ impl CacheStore {
     }
 
     /// Remove a specific entry.
+    #[allow(dead_code)]
     pub fn remove(&self, key: &CacheKey) -> bool {
         self.inner.map.remove(key).is_some()
     }

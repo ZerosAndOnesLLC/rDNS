@@ -2,6 +2,7 @@
 //! Only compiled when the `postgres` feature is enabled.
 
 #[cfg(feature = "postgres")]
+#[allow(dead_code)]
 mod inner {
     use crate::auth::catalog::ZoneCatalog;
     use crate::auth::zone::Zone;
@@ -304,4 +305,5 @@ mod inner {
 }
 
 #[cfg(feature = "postgres")]
+#[allow(unused_imports)]
 pub use inner::DatabaseBackend;

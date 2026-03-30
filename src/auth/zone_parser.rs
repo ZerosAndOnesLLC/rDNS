@@ -478,7 +478,6 @@ mail IN A   93.184.216.35
         assert!(www_a.is_some());
 
         // Check MX record
-        let mail_name = DnsName::from_str("mail.example.com").unwrap();
         let mx = zone.lookup(&origin, RecordType::MX);
         assert!(mx.is_some());
 

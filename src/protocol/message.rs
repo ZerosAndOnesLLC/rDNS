@@ -22,15 +22,7 @@ pub enum MessageError {
     #[error("record error: {0}")]
     Record(#[from] RecordError),
 
-    #[error("message too large: {0} bytes")]
-    TooLarge(usize),
 }
-
-/// Maximum UDP DNS message size (without EDNS)
-pub const MAX_UDP_SIZE: usize = 512;
-
-/// Maximum DNS message size (with EDNS, typical)
-pub const MAX_EDNS_SIZE: usize = 4096;
 
 impl Message {
     /// Decode a DNS message from wire format.

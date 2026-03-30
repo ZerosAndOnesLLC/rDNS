@@ -8,14 +8,16 @@ use crate::cache::CacheStore;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::{Header, Message};
 use crate::resolver::Resolver;
+use crate::rpz::RpzEngine;
 
 /// Process an incoming DNS query and produce a response.
-/// Routes between authoritative engine and resolver based on available components.
+/// Query flow: RPZ check -> Authoritative -> Resolver -> Cache -> SERVFAIL
 async fn handle_query(
     buf: &[u8],
     cache: &CacheStore,
     resolver: &Option<Resolver>,
     auth: &Option<AuthEngine>,
+    rpz: &RpzEngine,
 ) -> Vec<u8> {
     match Message::decode(buf) {
         Ok(query) => {
@@ -26,7 +28,16 @@ async fn handle_query(
             );
 
             if let Some(q) = query.questions.first() {
-                // Try authoritative engine first
+                // RPZ check first — block/redirect before any resolution
+                if let Some(action) = rpz.check(&q.name) {
+                    tracing::debug!(name = %q.name, action = ?action, "RPZ match");
+                    if let Some(response) = rpz.apply_action(&action, &query) {
+                        return response.encode();
+                    }
+                    // Passthru — continue normal resolution
+                }
+
+                // Try authoritative engine
                 if let Some(auth_engine) = auth {
                     match auth_engine.query(&q.name, q.qtype, q.qclass) {
                         AuthResult::Answer(mut response) => {
@@ -34,9 +45,7 @@ async fn handle_query(
                             response.header.rd = query.header.rd;
                             return response.encode();
                         }
-                        AuthResult::NotAuthoritative => {
-                            // Fall through to resolver
-                        }
+                        AuthResult::NotAuthoritative => {}
                     }
                 }
 

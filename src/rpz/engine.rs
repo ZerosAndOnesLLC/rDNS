@@ -5,7 +5,7 @@ use crate::protocol::name::DnsName;
 use crate::protocol::opcode::Opcode;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::rdata::RData;
-use crate::protocol::record::{Question, RecordClass, RecordType, ResourceRecord};
+use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -46,7 +46,7 @@ impl RpzEngine {
 
     /// Load RPZ rules from a zone file string.
     pub fn load_zone_str(&self, content: &str, zone_name: &DnsName) -> anyhow::Result<usize> {
-        let origin = zone_name.clone();
+        let _origin = zone_name.clone();
         let zone_suffix = format!(".{}", zone_name.to_dotted().trim_end_matches('.'));
         let mut new_rules = Vec::new();
 
@@ -103,7 +103,7 @@ impl RpzEngine {
             };
 
             // Determine trigger type
-            let (trigger, actual_name) = if trigger_name.starts_with("*.") {
+            let (trigger, _actual_name) = if trigger_name.starts_with("*.") {
                 let base = &trigger_name[2..];
                 let name = DnsName::from_str(base)
                     .unwrap_or_else(|_| DnsName::from_str("invalid.").unwrap());

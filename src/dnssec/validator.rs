@@ -1,4 +1,4 @@
-use super::algorithms::{DnskeyData, DsData, RrsigData};
+use super::algorithms::{DnskeyData, RrsigData};
 use super::trust_anchor::{ValidationStatus, root_trust_anchors};
 use crate::protocol::message::Message;
 use crate::protocol::rdata::RData;

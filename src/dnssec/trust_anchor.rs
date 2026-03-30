@@ -1,4 +1,4 @@
-use super::algorithms::{Algorithm, DnskeyData, DNSKEY_FLAG_SEP, DNSKEY_FLAG_ZONE_KEY};
+use super::algorithms::{Algorithm, DnskeyData};
 
 /// Root trust anchor keys.
 /// These are the IANA root zone KSK keys used to validate the DNSSEC chain.

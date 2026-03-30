@@ -1,10 +1,10 @@
 use crate::cache::entry::{CacheEntry, CacheKey};
 use crate::cache::CacheStore;
+use crate::dnssec::DnssecValidator;
 use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType};
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +21,8 @@ struct ResolverInner {
     root_hints: Vec<SocketAddr>,
     max_depth: u8,
     query_timeout: Duration,
+    dnssec_validator: DnssecValidator,
+    qname_minimization: bool,
 }
 
 impl Resolver {
@@ -28,6 +30,8 @@ impl Resolver {
         cache: CacheStore,
         forwarders: Vec<SocketAddr>,
         max_depth: u8,
+        dnssec_validator: DnssecValidator,
+        qname_minimization: bool,
     ) -> Self {
         Self {
             inner: Arc::new(ResolverInner {
@@ -36,6 +40,8 @@ impl Resolver {
                 root_hints: super::iterator::root_hints(),
                 max_depth,
                 query_timeout: Duration::from_secs(5),
+                dnssec_validator,
+                qname_minimization,
             }),
         }
     }
@@ -61,7 +67,11 @@ impl Resolver {
         };
 
         match result {
-            Ok(response) => {
+            Ok(mut response) => {
+                // DNSSEC validation
+                let status = self.inner.dnssec_validator.validate(&response);
+                DnssecValidator::set_ad_bit(&mut response, status);
+
                 // Cache the response
                 self.cache_response(&key, &response);
                 response
@@ -79,6 +89,10 @@ impl Resolver {
         name: &DnsName,
         rtype: RecordType,
     ) -> anyhow::Result<Message> {
+        if self.inner.qname_minimization {
+            tracing::trace!(name = %name, "QNAME minimization enabled");
+        }
+
         let response = super::iterator::iterate(
             name,
             rtype,
@@ -95,7 +109,6 @@ impl Resolver {
                 cname = %cname_target,
                 "Following CNAME"
             );
-            // Resolve the CNAME target (with depth tracking to prevent loops)
             let cname_response = super::iterator::iterate(
                 &cname_target,
                 rtype,
@@ -136,14 +149,12 @@ impl Resolver {
 
     /// Cache a successful DNS response.
     fn cache_response(&self, key: &CacheKey, response: &Message) {
-        // Determine TTL from the answer records
         let ttl = response
             .answers
             .iter()
             .map(|rr| rr.ttl)
             .min()
             .or_else(|| {
-                // For NXDOMAIN/NODATA, use the SOA minimum from authority
                 response.authority.iter().find_map(|rr| {
                     if let crate::protocol::rdata::RData::SOA(soa) = &rr.rdata {
                         Some(soa.minimum)
@@ -168,7 +179,6 @@ impl Resolver {
         self.inner.cache.insert(key.clone(), entry);
     }
 
-    /// Build a response from a cache entry.
     fn build_cached_response(
         &self,
         name: &DnsName,
@@ -182,7 +192,7 @@ impl Resolver {
 
         Message {
             header: Header {
-                id: 0, // Will be set by the listener
+                id: 0,
                 qr: true,
                 opcode: Opcode::Query,
                 aa: false,
@@ -249,10 +259,6 @@ impl Resolver {
             additional: vec![],
         }
     }
-
-    pub fn cache(&self) -> &CacheStore {
-        &self.inner.cache
-    }
 }
 
 #[cfg(test)]
@@ -262,8 +268,8 @@ mod tests {
     #[test]
     fn test_resolver_creation() {
         let cache = CacheStore::new(1000, 60, 86400, 300);
-        let resolver = Resolver::new(cache, vec![], 30);
-        // Just verify it can be created without panic
+        let validator = DnssecValidator::new(true);
+        let resolver = Resolver::new(cache, vec![], 30, validator, true);
         assert!(resolver.inner.forwarders.is_empty());
         assert_eq!(resolver.inner.root_hints.len(), 13);
     }

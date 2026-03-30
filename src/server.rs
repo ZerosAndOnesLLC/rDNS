@@ -1,8 +1,10 @@
 use crate::auth::{AuthEngine, ZoneCatalog};
 use crate::cache::CacheStore;
 use crate::config::{AuthSource, Config, ServerMode};
+use crate::dnssec::DnssecValidator;
 use crate::listener;
 use crate::resolver::Resolver;
+use crate::rpz::RpzEngine;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
@@ -34,12 +36,17 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         })
         .collect();
 
+    // Create DNSSEC validator
+    let dnssec_validator = DnssecValidator::new(cfg.resolver.dnssec);
+
     // Create resolver (used in resolver and both modes)
     let resolver = match cfg.server.mode {
         ServerMode::Resolver | ServerMode::Both => Some(Resolver::new(
             cache.clone(),
             forwarders,
             cfg.resolver.max_recursion_depth,
+            dnssec_validator,
+            cfg.resolver.qname_minimization,
         )),
         ServerMode::Authoritative => None,
     };
@@ -49,15 +56,32 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         ServerMode::Authoritative | ServerMode::Both => {
             let catalog = ZoneCatalog::new();
 
-            if cfg.authoritative.source == AuthSource::ZoneFiles {
-                let count = catalog.load_directory(&cfg.authoritative.directory)?;
-                info!(zones = count, "Loaded zone files");
+            match cfg.authoritative.source {
+                AuthSource::ZoneFiles => {
+                    let count = catalog.load_directory(&cfg.authoritative.directory)?;
+                    info!(zones = count, "Loaded zone files");
+                }
+                AuthSource::Database => {
+                    if let Some(ref db_cfg) = cfg.authoritative.database {
+                        info!(connection = %db_cfg.connection, "Database backend configured (enable 'postgres' feature to use)");
+                    }
+                }
+                AuthSource::None => {}
             }
 
             Some(AuthEngine::new(catalog))
         }
         ServerMode::Resolver => None,
     };
+
+    // Create RPZ engine
+    let rpz_engine = RpzEngine::new();
+    // RPZ zones would be loaded here from config
+    // For now the engine is empty but wired in
+
+    if cfg.security.rate_limit > 0 {
+        info!(rate_limit = cfg.security.rate_limit, "Per-source rate limit configured");
+    }
 
     let mut handles = Vec::new();
 
@@ -67,8 +91,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let resolver = resolver.clone();
         let cache = cache.clone();
         let auth = auth_engine.clone();
+        let rpz = rpz_engine.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth).await {
+            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth, rpz).await {
                 tracing::error!(%addr, error = %e, "UDP listener failed");
             }
         }));
@@ -81,8 +106,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let resolver = resolver.clone();
         let cache = cache.clone();
         let auth = auth_engine.clone();
+        let rpz = rpz_engine.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth).await {
+            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth, rpz).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));
@@ -98,9 +124,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let resolver = resolver.clone();
             let cache = cache.clone();
             let auth = auth_engine.clone();
+            let rpz = rpz_engine.clone();
             handles.push(tokio::spawn(async move {
                 if let Err(e) =
-                    listener::tls::serve(addr, acceptor, cache, resolver, auth).await
+                    listener::tls::serve(addr, acceptor, cache, resolver, auth, rpz).await
                 {
                     tracing::error!(%addr, error = %e, "DoT listener failed");
                 }

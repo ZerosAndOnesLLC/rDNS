@@ -2,8 +2,8 @@ use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::rdata::RData;
-use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use crate::protocol::record::{RecordClass, RecordType};
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
@@ -297,6 +297,8 @@ pub(crate) fn rand_id() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::record::ResourceRecord;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_root_hints() {
