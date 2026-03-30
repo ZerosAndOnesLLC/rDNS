@@ -1,0 +1,66 @@
+# rDNS Configuration
+# Copy this file to /etc/rdns/rdns.toml and adjust as needed.
+
+[server]
+# "resolver" - recursive resolver / forwarder only
+# "authoritative" - authoritative server only
+# "both" - recursive resolver + authoritative
+mode = "resolver"
+user = "rdns"
+group = "rdns"
+pidfile = "/var/run/rdns/rdns.pid"
+
+[listeners]
+udp = ["0.0.0.0:53", "[::]:53"]
+tcp = ["0.0.0.0:53", "[::]:53"]
+
+# Uncomment to enable DNS-over-TLS
+# [listeners.tls]
+# addresses = ["0.0.0.0:853", "[::]:853"]
+# cert = "/etc/rdns/tls/cert.pem"
+# key = "/etc/rdns/tls/key.pem"
+
+[cache]
+max_entries = 1_000_000
+max_ttl = 86400
+min_ttl = 60
+negative_ttl = 300
+
+[resolver]
+# Empty = full recursive resolution from root hints
+# Set to upstream servers for forwarder mode
+forwarders = []
+# forwarders = ["1.1.1.1", "8.8.8.8"]
+dnssec = true
+qname_minimization = true
+max_recursion_depth = 30
+
+[authoritative]
+# "zone-files" | "database" | "none"
+source = "none"
+directory = "/etc/rdns/zones"
+
+# Uncomment for PostgreSQL backend (ISP/enterprise scale)
+# [authoritative.database]
+# connection = "postgresql://rdns:password@localhost:5432/rdns"
+
+# Uncomment to enable RPZ filtering
+# [[rpz.zones]]
+# name = "rpz.local"
+# file = "/etc/rdns/rpz/blocklist.rpz"
+
+[control]
+socket = "/var/run/rdns/control.sock"
+
+[metrics]
+enabled = false
+address = "127.0.0.1:9153"
+
+[logging]
+level = "info"
+# "json" | "text"
+format = "json"
+
+[security]
+sandbox = true
+rate_limit = 1000
