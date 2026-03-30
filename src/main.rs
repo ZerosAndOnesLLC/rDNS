@@ -1,6 +1,7 @@
 mod auth;
 mod cache;
 mod config;
+mod dnssec;
 mod listener;
 mod protocol;
 mod resolver;
