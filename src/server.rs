@@ -133,10 +133,28 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         info!(addr = %cfg.metrics.address, "Prometheus metrics endpoint started");
     }
 
+    // Write PID file
+    crate::security::privilege::write_pidfile(&cfg.server.pidfile)?;
+
+    // Drop privileges after all ports are bound
+    if let Err(e) = crate::security::privilege::drop_privileges(&cfg.server.user, &cfg.server.group)
+    {
+        tracing::warn!(error = %e, "Could not drop privileges");
+    }
+
+    // Enter platform sandbox
+    if cfg.security.sandbox {
+        if let Err(e) = crate::security::sandbox::enter_sandbox() {
+            tracing::warn!(error = %e, "Could not enter sandbox");
+        }
+    }
+
     info!("rDNS ready");
 
     shutdown_signal().await;
     info!("Shutting down");
+
+    crate::security::privilege::remove_pidfile(&cfg.server.pidfile);
 
     for handle in handles {
         handle.abort();

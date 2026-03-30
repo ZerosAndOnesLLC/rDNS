@@ -1067,12 +1067,13 @@ dependencies = [
 
 [[package]]
 name = "rdns"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bytes",
  "clap",
  "dashmap",
+ "libc",
  "rustls",
  "rustls-pemfile",
  "serde",

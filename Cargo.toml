@@ -1,6 +1,6 @@
 [package]
 name = "rdns"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 license = "MIT"
 description = "A high-performance, security-focused DNS server written in Rust"
@@ -28,6 +28,7 @@ dashmap = "6"
 rustls = "0.23"
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

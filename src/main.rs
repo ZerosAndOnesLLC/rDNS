@@ -6,6 +6,7 @@ mod dnssec;
 mod listener;
 mod metrics;
 mod rpz;
+mod security;
 mod protocol;
 mod resolver;
 mod server;
