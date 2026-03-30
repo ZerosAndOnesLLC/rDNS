@@ -1,6 +1,8 @@
 use crate::cache::CacheStore;
-use crate::config::Config;
+use crate::config::{Config, ServerMode};
 use crate::listener;
+use crate::resolver::Resolver;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
 use tracing::info;
@@ -17,14 +19,42 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Spawn cache expiry background task (sweep every 60s)
     let _expiry_handle = cache.clone().spawn_expiry_task(Duration::from_secs(60));
 
+    // Parse forwarder addresses
+    let forwarders: Vec<SocketAddr> = cfg
+        .resolver
+        .forwarders
+        .iter()
+        .filter_map(|s| {
+            // Support formats: "1.1.1.1", "1.1.1.1:53"
+            if s.contains(':') {
+                s.parse().ok()
+            } else {
+                format!("{}:53", s).parse().ok()
+            }
+        })
+        .collect();
+
+    // Create resolver (used in resolver and both modes)
+    let resolver = match cfg.server.mode {
+        ServerMode::Resolver | ServerMode::Both => {
+            Some(Resolver::new(
+                cache.clone(),
+                forwarders,
+                cfg.resolver.max_recursion_depth,
+            ))
+        }
+        ServerMode::Authoritative => None,
+    };
+
     let mut handles = Vec::new();
 
     // Start UDP listeners
     for addr in &cfg.listeners.udp {
         let addr = *addr;
+        let resolver = resolver.clone();
         let cache = cache.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::udp::serve(addr, cache).await {
+            if let Err(e) = listener::udp::serve(addr, cache, resolver).await {
                 tracing::error!(%addr, error = %e, "UDP listener failed");
             }
         }));
@@ -34,9 +64,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Start TCP listeners
     for addr in &cfg.listeners.tcp {
         let addr = *addr;
+        let resolver = resolver.clone();
         let cache = cache.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr, cache).await {
+            if let Err(e) = listener::tcp::serve(addr, cache, resolver).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));

@@ -2,6 +2,7 @@ mod cache;
 mod config;
 mod listener;
 mod protocol;
+mod resolver;
 mod server;
 
 use clap::Parser;

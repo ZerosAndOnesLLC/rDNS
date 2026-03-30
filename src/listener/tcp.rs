@@ -1,18 +1,23 @@
 use crate::cache::CacheStore;
+use crate::resolver::Resolver;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 /// Serve DNS queries over TCP on the given address.
-/// TCP DNS uses a 2-byte length prefix before each message (RFC 1035 Section 4.2.2).
-pub async fn serve(addr: SocketAddr, cache: CacheStore) -> anyhow::Result<()> {
+pub async fn serve(
+    addr: SocketAddr,
+    cache: CacheStore,
+    resolver: Option<Resolver>,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, "TCP listener bound");
 
     loop {
         let (stream, src) = listener.accept().await?;
         let cache = cache.clone();
-        tokio::spawn(handle_connection(stream, src, cache));
+        let resolver = resolver.clone();
+        tokio::spawn(handle_connection(stream, src, cache, resolver));
     }
 }
 
@@ -20,8 +25,9 @@ async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     src: SocketAddr,
     cache: CacheStore,
+    resolver: Option<Resolver>,
 ) {
-    if let Err(e) = handle_connection_inner(&mut stream, src, &cache).await {
+    if let Err(e) = handle_connection_inner(&mut stream, src, &cache, &resolver).await {
         tracing::debug!(%src, error = %e, "TCP connection error");
     }
 }
@@ -30,6 +36,7 @@ async fn handle_connection_inner(
     stream: &mut tokio::net::TcpStream,
     src: SocketAddr,
     cache: &CacheStore,
+    resolver: &Option<Resolver>,
 ) -> anyhow::Result<()> {
     loop {
         let len = match stream.read_u16().await {
@@ -49,7 +56,7 @@ async fn handle_connection_inner(
 
         tracing::debug!(%src, bytes = len, "TCP query received");
 
-        let response = super::handle_query(&buf, cache);
+        let response = super::handle_query(&buf, cache, resolver).await;
 
         let resp_len = response.len() as u16;
         stream.write_u16(resp_len).await?;

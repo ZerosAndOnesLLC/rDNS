@@ -5,10 +5,11 @@ use crate::cache::entry::CacheKey;
 use crate::cache::CacheStore;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::{Header, Message};
+use crate::resolver::Resolver;
 
 /// Process an incoming DNS query and produce a response.
-/// Checks cache first, returns SERVFAIL on cache miss (until resolver is implemented).
-fn handle_query(buf: &[u8], cache: &CacheStore) -> Vec<u8> {
+/// Uses resolver if available, otherwise returns from cache or SERVFAIL.
+async fn handle_query(buf: &[u8], cache: &CacheStore, resolver: &Option<Resolver>) -> Vec<u8> {
     match Message::decode(buf) {
         Ok(query) => {
             tracing::debug!(
@@ -17,8 +18,16 @@ fn handle_query(buf: &[u8], cache: &CacheStore) -> Vec<u8> {
                 "Received query"
             );
 
-            // Check cache for the first question
             if let Some(q) = query.questions.first() {
+                // If we have a resolver, use it (it checks cache internally)
+                if let Some(resolver) = resolver {
+                    let mut response = resolver.resolve(&q.name, q.qtype, q.qclass).await;
+                    response.header.id = query.header.id;
+                    response.header.rd = query.header.rd;
+                    return response.encode();
+                }
+
+                // No resolver — check cache directly
                 let key = CacheKey::new(q.name.clone(), q.qtype, q.qclass);
                 if let Some(entry) = cache.lookup(&key) {
                     tracing::debug!(name = %q.name, rtype = %q.qtype, "Cache hit");
@@ -30,7 +39,7 @@ fn handle_query(buf: &[u8], cache: &CacheStore) -> Vec<u8> {
                             aa: false,
                             tc: false,
                             rd: query.header.rd,
-                            ra: true,
+                            ra: false,
                             ad: false,
                             cd: false,
                             rcode: if entry.negative { Rcode::NxDomain } else { Rcode::NoError },
@@ -46,12 +55,10 @@ fn handle_query(buf: &[u8], cache: &CacheStore) -> Vec<u8> {
                     };
                     return response.encode();
                 }
-                tracing::debug!(name = %q.name, rtype = %q.qtype, "Cache miss");
             }
 
-            // No cache hit — return SERVFAIL until resolver is implemented
-            let response = Message::servfail(&query);
-            response.encode()
+            // No cache hit, no resolver — SERVFAIL
+            Message::servfail(&query).encode()
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to parse query");
