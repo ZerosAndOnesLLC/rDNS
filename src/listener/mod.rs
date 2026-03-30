@@ -1,4 +1,5 @@
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 
 use crate::auth::engine::{AuthEngine, AuthResult};

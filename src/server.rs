@@ -89,6 +89,26 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         info!(%addr, "TCP listener started");
     }
 
+    // Start TLS listeners (DNS-over-TLS)
+    if let Some(ref tls_cfg) = cfg.listeners.tls {
+        let acceptor = listener::tls::build_tls_acceptor(&tls_cfg.cert, &tls_cfg.key)?;
+        for addr in &tls_cfg.addresses {
+            let addr = *addr;
+            let acceptor = acceptor.clone();
+            let resolver = resolver.clone();
+            let cache = cache.clone();
+            let auth = auth_engine.clone();
+            handles.push(tokio::spawn(async move {
+                if let Err(e) =
+                    listener::tls::serve(addr, acceptor, cache, resolver, auth).await
+                {
+                    tracing::error!(%addr, error = %e, "DoT listener failed");
+                }
+            }));
+            info!(%addr, "DNS-over-TLS listener started");
+        }
+    }
+
     info!("rDNS ready");
 
     shutdown_signal().await;
