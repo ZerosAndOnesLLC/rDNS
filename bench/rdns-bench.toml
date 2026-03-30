@@ -1,0 +1,36 @@
+[server]
+mode = "resolver"
+user = "mack"
+group = "mack"
+pidfile = "/tmp/rdns-bench.pid"
+
+[listeners]
+udp = ["127.0.0.1:5553"]
+tcp = ["127.0.0.1:5553"]
+
+[cache]
+max_entries = 1000000
+max_ttl = 86400
+min_ttl = 60
+negative_ttl = 300
+
+[resolver]
+forwarders = ["1.1.1.1"]
+dnssec = false
+qname_minimization = false
+max_recursion_depth = 30
+
+[control]
+socket = "/tmp/rdns-bench.sock"
+
+[metrics]
+enabled = false
+address = "127.0.0.1:9153"
+
+[logging]
+level = "error"
+format = "text"
+
+[security]
+sandbox = false
+rate_limit = 0

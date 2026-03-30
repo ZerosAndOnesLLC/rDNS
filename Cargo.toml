@@ -1,6 +1,6 @@
 [package]
 name = "rdns"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 license = "MIT"
 description = "A high-performance, security-focused DNS server written in Rust"

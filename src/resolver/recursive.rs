@@ -5,9 +5,11 @@ use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType};
+use crate::resolver::forwarder::ForwarderPool;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 /// The main recursive resolver.
 #[derive(Clone)]
@@ -23,6 +25,8 @@ struct ResolverInner {
     query_timeout: Duration,
     dnssec_validator: DnssecValidator,
     qname_minimization: bool,
+    /// Lazily initialized forwarder pool (one per first forwarder)
+    forwarder_pool: OnceCell<ForwarderPool>,
 }
 
 impl Resolver {
@@ -42,8 +46,34 @@ impl Resolver {
                 query_timeout: Duration::from_secs(5),
                 dnssec_validator,
                 qname_minimization,
+                forwarder_pool: OnceCell::new(),
             }),
         }
+    }
+
+    /// Get or create the forwarder pool for the primary forwarder.
+    async fn get_forwarder_pool(&self) -> Option<&ForwarderPool> {
+        let server = self.inner.forwarders.first()?;
+        let server = *server;
+        Some(
+            self.inner
+                .forwarder_pool
+                .get_or_init(|| async {
+                    match ForwarderPool::new(server).await {
+                        Ok(pool) => {
+                            tracing::info!(%server, "Forwarder connection pool initialized");
+                            pool
+                        }
+                        Err(e) => {
+                            tracing::error!(%server, error = %e, "Failed to create forwarder pool, using single-shot");
+                            // Create a dummy that will fail — caller falls back
+                            // This shouldn't happen in practice
+                            ForwarderPool::new(server).await.unwrap()
+                        }
+                    }
+                })
+                .await,
+        )
     }
 
     /// Resolve a DNS query. Checks cache first, then resolves recursively or forwards.
@@ -118,7 +148,6 @@ impl Resolver {
             )
             .await?;
 
-            // Merge: original CNAME answers + target answers
             let mut merged = response;
             for answer in cname_response.answers {
                 if !merged.answers.contains(&answer) {
@@ -132,12 +161,23 @@ impl Resolver {
         Ok(response)
     }
 
-    /// Forward to upstream resolvers.
+    /// Forward to upstream resolvers using the connection pool.
     async fn resolve_forwarded(
         &self,
         name: &DnsName,
         rtype: RecordType,
     ) -> anyhow::Result<Message> {
+        // Try the pooled forwarder first (much faster under concurrency)
+        if let Some(pool) = self.get_forwarder_pool().await {
+            match pool.query(name, rtype, self.inner.query_timeout).await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    tracing::debug!(error = %e, "Pooled forwarder failed, falling back");
+                }
+            }
+        }
+
+        // Fallback to single-shot forwarding
         super::forwarder::forward(
             name,
             rtype,

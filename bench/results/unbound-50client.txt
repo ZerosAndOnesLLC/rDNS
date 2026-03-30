@@ -1,0 +1,23 @@
+DNS Performance Testing Tool
+Version 2.14.0
+
+[Status] Command line: dnsperf -s 127.0.0.1 -p 5554 -d /home/mack/dev/rDNS/bench/queryfile.txt -c 50 -T 10 -l 10 -Q 50000
+[Status] Sending queries (to 127.0.0.1:5554)
+[Status] Started at: Mon Mar 30 12:38:27 2026
+[Status] Stopping after 10.000000 seconds
+[Status] Testing complete (time limit)
+
+Statistics:
+
+  Queries sent:         348096
+  Queries completed:    348096 (100.00%)
+  Queries lost:         0 (0.00%)
+
+  Response codes:       NOERROR 330691 (95.00%), NXDOMAIN 17405 (5.00%)
+  Average packet size:  request 30, response 89
+  Run time (s):         11.032557
+  Queries per second:   31551.706463
+
+  Average Latency (s):  0.001028 (min 0.000014, max 2.276503)
+  Latency StdDev (s):   0.026859
+

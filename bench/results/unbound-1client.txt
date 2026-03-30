@@ -1,0 +1,25 @@
+DNS Performance Testing Tool
+Version 2.14.0
+
+Warning: requested number of threads (-T 10) exceeds number of clients (-c 1), lowering number of threads
+
+[Status] Command line: dnsperf -s 127.0.0.1 -p 5554 -d /home/mack/dev/rDNS/bench/queryfile.txt -c 1 -T 10 -l 10 -Q 50000
+[Status] Sending queries (to 127.0.0.1:5554)
+[Status] Started at: Mon Mar 30 12:37:47 2026
+[Status] Stopping after 10.000000 seconds
+[Status] Testing complete (time limit)
+
+Statistics:
+
+  Queries sent:         499997
+  Queries completed:    499997 (100.00%)
+  Queries lost:         0 (0.00%)
+
+  Response codes:       NOERROR 474997 (95.00%), NXDOMAIN 25000 (5.00%)
+  Average packet size:  request 30, response 89
+  Run time (s):         10.000022
+  Queries per second:   49999.590001
+
+  Average Latency (s):  0.000035 (min 0.000004, max 0.001611)
+  Latency StdDev (s):   0.000061
+
