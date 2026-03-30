@@ -1,4 +1,6 @@
 pub mod catalog;
+#[cfg(feature = "postgres")]
+pub mod database;
 pub mod engine;
 pub mod zone;
 pub mod zone_parser;
