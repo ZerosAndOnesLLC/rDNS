@@ -1,0 +1,29 @@
+[Unit]
+Description=rDNS - High-Performance DNS Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rdns
+Group=rdns
+ExecStart=/usr/local/bin/rdns -c /etc/rdns/rdns.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/run/rdns
+ReadOnlyPaths=/etc/rdns
+
+# Allow binding to privileged ports
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

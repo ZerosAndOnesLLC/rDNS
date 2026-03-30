@@ -155,105 +155,105 @@ rdns/
 ### Phase 2: Caching Layer
 > Goal: Sharded concurrent cache with TTL eviction
 
-- [ ] 2.1 — Cache entry struct (response data, TTL, insertion time, access count)
-- [ ] 2.2 — Sharded cache store (dashmap-based, configurable size)
-- [ ] 2.3 — TTL expiration (background sweep task, lazy eviction on access)
-- [ ] 2.4 — Cache lookup integration with listeners (check cache before processing)
-- [ ] 2.5 — Negative caching (NXDOMAIN, NODATA per RFC 2308)
-- [ ] 2.6 — Cache tests
+- [x] 2.1 — Cache entry struct (response data, TTL, insertion time, access count)
+- [x] 2.2 — Sharded cache store (dashmap-based, configurable size)
+- [x] 2.3 — TTL expiration (background sweep task, lazy eviction on access)
+- [x] 2.4 — Cache lookup integration with listeners (check cache before processing)
+- [x] 2.5 — Negative caching (NXDOMAIN, NODATA per RFC 2308)
+- [x] 2.6 — Cache tests
 
 ### Phase 3: Recursive Resolver
 > Goal: Full recursive resolution from root hints
 
-- [ ] 3.1 — Root hints loader (built-in root server addresses)
-- [ ] 3.2 — Iterative resolution engine (follow referrals from root → TLD → auth)
-- [ ] 3.3 — CNAME/DNAME chain following
-- [ ] 3.4 — Forwarder mode (forward to upstream resolvers, cache responses)
-- [ ] 3.5 — Query deduplication (coalesce identical in-flight queries)
-- [ ] 3.6 — Retry logic with timeout (configurable per-server timeout, fallback)
-- [ ] 3.7 — Resolver integration tests
+- [x] 3.1 — Root hints loader (built-in root server addresses)
+- [x] 3.2 — Iterative resolution engine (follow referrals from root → TLD → auth)
+- [x] 3.3 — CNAME/DNAME chain following
+- [x] 3.4 — Forwarder mode (forward to upstream resolvers, cache responses)
+- [x] 3.5 — Query deduplication (coalesce identical in-flight queries)
+- [x] 3.6 — Retry logic with timeout (configurable per-server timeout, fallback)
+- [x] 3.7 — Resolver integration tests
 
 ### Phase 4: Authoritative Engine
 > Goal: Serve zones from zone files loaded into memory
 
-- [ ] 4.1 — Zone data structures (zone tree, node, RRset)
-- [ ] 4.2 — RFC 1035 zone file parser ($ORIGIN, $TTL, $INCLUDE, RR entries)
-- [ ] 4.3 — Zone catalog (load/reload/remove zones)
-- [ ] 4.4 — Authoritative query engine (exact match, wildcard, delegation, NXDOMAIN)
-- [ ] 4.5 — Query router (determine if query is auth or recursive, route accordingly)
-- [ ] 4.6 — AXFR/IXFR zone transfer (secondary support)
-- [ ] 4.7 — NOTIFY handling (trigger reload on primary change)
-- [ ] 4.8 — Authoritative tests with sample zones
+- [x] 4.1 — Zone data structures (zone tree, node, RRset)
+- [x] 4.2 — RFC 1035 zone file parser ($ORIGIN, $TTL, $INCLUDE, RR entries)
+- [x] 4.3 — Zone catalog (load/reload/remove zones)
+- [x] 4.4 — Authoritative query engine (exact match, wildcard, delegation, NXDOMAIN)
+- [x] 4.5 — Query router (determine if query is auth or recursive, route accordingly)
+- [x] 4.6 — AXFR/IXFR zone transfer (secondary support)
+- [x] 4.7 — NOTIFY handling (trigger reload on primary change)
+- [x] 4.8 — Authoritative tests with sample zones
 
 ### Phase 5: DNSSEC Validation
 > Goal: Full DNSSEC validation for recursive responses
 
-- [ ] 5.1 — Trust anchor management (built-in root KSK, RFC 5011 auto-update)
-- [ ] 5.2 — DS/DNSKEY/RRSIG record parsing and wire format
-- [ ] 5.3 — Signature validation (RSA/SHA-256, ECDSA P-256, Ed25519)
-- [ ] 5.4 — Chain of trust validation (root → TLD → zone)
-- [ ] 5.5 — NSEC/NSEC3 denial of existence validation
-- [ ] 5.6 — Set CD/AD bits correctly in responses
-- [ ] 5.7 — DNSSEC tests with known-good and known-bad chains
+- [x] 5.1 — Trust anchor management (built-in root KSK, RFC 5011 auto-update)
+- [x] 5.2 — DS/DNSKEY/RRSIG record parsing and wire format
+- [x] 5.3 — Signature validation (RSA/SHA-256, ECDSA P-256, Ed25519)
+- [x] 5.4 — Chain of trust validation (root → TLD → zone)
+- [x] 5.5 — NSEC/NSEC3 denial of existence validation
+- [x] 5.6 — Set CD/AD bits correctly in responses
+- [x] 5.7 — DNSSEC tests with known-good and known-bad chains
 
 ### Phase 6: DNS-over-TLS
 > Goal: Serve DNS queries over TLS (RFC 7858)
 
-- [ ] 6.1 — TLS listener on :853 (rustls, configurable cert/key)
-- [ ] 6.2 — Connection handling (persistent connections, idle timeout)
-- [ ] 6.3 — Upstream DoT support (resolver can query upstream over TLS)
-- [ ] 6.4 — TLS session resumption for performance
-- [ ] 6.5 — TLS integration tests
+- [x] 6.1 — TLS listener on :853 (rustls, configurable cert/key)
+- [x] 6.2 — Connection handling (persistent connections, idle timeout)
+- [x] 6.3 — Upstream DoT support (resolver can query upstream over TLS)
+- [x] 6.4 — TLS session resumption for performance
+- [x] 6.5 — TLS integration tests
 
 ### Phase 7: RPZ (Response Policy Zones)
 > Goal: Filter/block queries based on RPZ rules
 
-- [ ] 7.1 — RPZ zone parser (load RPZ zone files)
-- [ ] 7.2 — RPZ matching engine (qname, IP, nsdname triggers)
-- [ ] 7.3 — Policy actions (NXDOMAIN, NODATA, passthru, local-data, redirect)
-- [ ] 7.4 — RPZ zone refresh (periodic re-fetch via AXFR/HTTP)
-- [ ] 7.5 — RPZ tests
+- [x] 7.1 — RPZ zone parser (load RPZ zone files)
+- [x] 7.2 — RPZ matching engine (qname, IP, nsdname triggers)
+- [x] 7.3 — Policy actions (NXDOMAIN, NODATA, passthru, local-data, redirect)
+- [x] 7.4 — RPZ zone refresh (periodic re-fetch via AXFR/HTTP)
+- [x] 7.5 — RPZ tests
 
 ### Phase 8: Control Interface & Metrics
 > Goal: Runtime management and observability
 
-- [ ] 8.1 — Unix domain socket listener for control commands
-- [ ] 8.2 — Control protocol (simple text commands: stats, flush, reload, dump)
-- [ ] 8.3 — `rdns-control` CLI binary
-- [ ] 8.4 — Prometheus metrics endpoint (/metrics on configurable port)
-- [ ] 8.5 — Key metrics: QPS, cache hit/miss ratio, latency histograms, upstream errors
-- [ ] 8.6 — Structured logging with tracing (JSON + syslog output)
+- [x] 8.1 — Unix domain socket listener for control commands
+- [x] 8.2 — Control protocol (simple text commands: stats, flush, reload, dump)
+- [x] 8.3 — `rdns-control` CLI binary
+- [x] 8.4 — Prometheus metrics endpoint (/metrics on configurable port)
+- [x] 8.5 — Key metrics: QPS, cache hit/miss ratio, latency histograms, upstream errors
+- [x] 8.6 — Structured logging with tracing (JSON + syslog output)
 
 ### Phase 9: Security Hardening
 > Goal: Privilege separation and platform sandboxing
 
-- [ ] 9.1 — Privilege dropping (bind ports as root, drop to rdns user)
-- [ ] 9.2 — FreeBSD Capsicum sandboxing (enter capability mode after init)
-- [ ] 9.3 — Linux seccomp-bpf filtering (restrict syscalls)
-- [ ] 9.4 — Chroot / filesystem isolation
-- [ ] 9.5 — Source port randomization + 0x20 encoding (anti-spoofing)
-- [ ] 9.6 — Rate limiting (per-source query rate limits)
+- [x] 9.1 — Privilege dropping (bind ports as root, drop to rdns user)
+- [x] 9.2 — FreeBSD Capsicum sandboxing (enter capability mode after init)
+- [x] 9.3 — Linux seccomp-bpf filtering (restrict syscalls)
+- [x] 9.4 — Chroot / filesystem isolation
+- [x] 9.5 — Source port randomization + 0x20 encoding (anti-spoofing)
+- [x] 9.6 — Rate limiting (per-source query rate limits)
 
 ### Phase 10: PostgreSQL Backend
 > Goal: Database-backed zone storage for large-scale deployments
 
-- [ ] 10.1 — Database schema (zones, records, metadata tables)
-- [ ] 10.2 — SQLx integration (connection pool, async queries)
-- [ ] 10.3 — Zone loader from DB (startup full load, single-zone reload)
-- [ ] 10.4 — Postgres LISTEN/NOTIFY for change detection
-- [ ] 10.5 — Migration tooling (sqlx migrations)
-- [ ] 10.6 — DB backend tests
+- [x] 10.1 — Database schema (zones, records, metadata tables)
+- [x] 10.2 — SQLx integration (connection pool, async queries)
+- [x] 10.3 — Zone loader from DB (startup full load, single-zone reload)
+- [x] 10.4 — Postgres LISTEN/NOTIFY for change detection
+- [x] 10.5 — Migration tooling (sqlx migrations)
+- [x] 10.6 — DB backend tests
 
 ### Phase 11: Packaging & Distribution
 > Goal: Ready for production deployment
 
-- [ ] 11.1 — FreeBSD rc.d service script
-- [ ] 11.2 — Linux systemd unit file
-- [ ] 11.3 — FreeBSD port Makefile
-- [ ] 11.4 — Docker image
-- [ ] 11.5 — Man pages (rdns.8, rdns-control.8, rdns.toml.5)
-- [ ] 11.6 — Performance benchmarks (dnsperf / queryperf)
-- [ ] 11.7 — README with quick-start guide
+- [x] 11.1 — FreeBSD rc.d service script
+- [x] 11.2 — Linux systemd unit file
+- [x] 11.3 — FreeBSD port Makefile
+- [x] 11.4 — Docker image
+- [x] 11.5 — Man pages (rdns.8, rdns-control.8, rdns.toml.5)
+- [x] 11.6 — Performance benchmarks (dnsperf / queryperf)
+- [x] 11.7 — README with quick-start guide
 
 ## Config Example (rdns.toml)
 
