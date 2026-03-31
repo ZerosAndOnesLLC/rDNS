@@ -30,6 +30,9 @@ pub struct Config {
 
     #[serde(default)]
     pub security: SecurityConfig,
+
+    #[serde(default)]
+    pub rpz: RpzConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +104,20 @@ pub struct ResolverConfig {
 
     #[serde(default = "default_max_recursion_depth")]
     pub max_recursion_depth: u8,
+
+    /// Per-domain forwarding: queries matching a zone name are forwarded
+    /// to zone-specific upstream servers instead of the global forwarders.
+    #[serde(default)]
+    pub forward_zones: Vec<ForwardZoneConfig>,
+}
+
+/// Per-domain forwarding configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ForwardZoneConfig {
+    /// Domain name to match (e.g. "corp.example.com").
+    pub name: String,
+    /// Upstream DNS servers for this domain (IP or IP:port).
+    pub forwarders: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,6 +272,7 @@ impl Default for ResolverConfig {
             dnssec: true,
             qname_minimization: true,
             max_recursion_depth: 30,
+            forward_zones: Vec::new(),
         }
     }
 }
@@ -302,6 +320,23 @@ impl Default for SecurityConfig {
             rate_limit: default_rate_limit(),
         }
     }
+}
+
+/// Response Policy Zone configuration.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RpzConfig {
+    /// RPZ zone files to load at startup.
+    #[serde(default)]
+    pub zones: Vec<RpzZoneConfig>,
+}
+
+/// A single RPZ zone file reference.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RpzZoneConfig {
+    /// Policy zone name (e.g. "rpz.local").
+    pub name: String,
+    /// Path to the RPZ zone file.
+    pub file: PathBuf,
 }
 
 impl Config {

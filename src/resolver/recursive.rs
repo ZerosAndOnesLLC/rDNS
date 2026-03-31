@@ -1,5 +1,6 @@
 use crate::cache::entry::{CacheEntry, CacheKey};
 use crate::cache::CacheStore;
+use crate::config::ForwardZoneConfig;
 use crate::dnssec::DnssecValidator;
 use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
@@ -10,6 +11,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OnceCell;
+
+/// A parsed forward zone: domain suffix → upstream servers.
+struct ForwardZone {
+    /// Domain suffix to match (lowercase, with trailing dot).
+    suffix: String,
+    /// Upstream DNS servers for this zone.
+    servers: Vec<SocketAddr>,
+}
 
 /// The main recursive resolver.
 #[derive(Clone)]
@@ -27,6 +36,8 @@ struct ResolverInner {
     qname_minimization: bool,
     /// Lazily initialized forwarder pool (one per first forwarder)
     forwarder_pool: OnceCell<ForwarderPool>,
+    /// Per-domain forwarding rules (longest suffix match wins).
+    forward_zones: Vec<ForwardZone>,
 }
 
 impl Resolver {
@@ -47,8 +58,77 @@ impl Resolver {
                 dnssec_validator,
                 qname_minimization,
                 forwarder_pool: OnceCell::new(),
+                forward_zones: Vec::new(),
             }),
         }
+    }
+
+    /// Create a resolver with per-domain forward zones.
+    pub fn with_forward_zones(
+        cache: CacheStore,
+        forwarders: Vec<SocketAddr>,
+        max_depth: u8,
+        dnssec_validator: DnssecValidator,
+        qname_minimization: bool,
+        zones: &[ForwardZoneConfig],
+    ) -> Self {
+        let forward_zones: Vec<ForwardZone> = zones
+            .iter()
+            .filter_map(|z| {
+                let servers: Vec<SocketAddr> = z
+                    .forwarders
+                    .iter()
+                    .filter_map(|s| {
+                        if s.contains(':') {
+                            s.parse().ok()
+                        } else {
+                            format!("{}:53", s).parse().ok()
+                        }
+                    })
+                    .collect();
+                if servers.is_empty() {
+                    return None;
+                }
+                let mut suffix = z.name.to_lowercase();
+                if !suffix.ends_with('.') {
+                    suffix.push('.');
+                }
+                Some(ForwardZone { suffix, servers })
+            })
+            .collect();
+
+        if !forward_zones.is_empty() {
+            tracing::info!(count = forward_zones.len(), "Forward zones configured");
+        }
+
+        Self {
+            inner: Arc::new(ResolverInner {
+                cache,
+                forwarders,
+                root_hints: super::iterator::root_hints(),
+                max_depth,
+                query_timeout: Duration::from_secs(5),
+                dnssec_validator,
+                qname_minimization,
+                forwarder_pool: OnceCell::new(),
+                forward_zones,
+            }),
+        }
+    }
+
+    /// Find the best matching forward zone for a query name (longest suffix wins).
+    fn match_forward_zone(&self, name: &DnsName) -> Option<&[SocketAddr]> {
+        let qname = name.to_dotted().to_lowercase();
+        let mut best: Option<(usize, &[SocketAddr])> = None;
+        for fz in &self.inner.forward_zones {
+            if qname.ends_with(&fz.suffix) || qname.trim_end_matches('.') == fz.suffix.trim_end_matches('.') {
+                let len = fz.suffix.len();
+                if best.map_or(true, |(bl, _)| len > bl) {
+                    best = Some((len, &fz.servers));
+                }
+            }
+        }
+        best.map(|(_, servers)| servers)
     }
 
     /// Get or create the forwarder pool for the primary forwarder.
@@ -89,8 +169,11 @@ impl Resolver {
             return self.build_cached_response(name, rtype, rclass, &entry);
         }
 
-        // Resolve
-        let result = if self.inner.forwarders.is_empty() {
+        // Resolve: check per-domain forward zones first, then global forwarders, then recursive
+        let result = if let Some(zone_servers) = self.match_forward_zone(name) {
+            tracing::debug!(name = %name, servers = ?zone_servers, "Using forward zone");
+            super::forwarder::forward(name, rtype, zone_servers, self.inner.query_timeout).await
+        } else if self.inner.forwarders.is_empty() {
             self.resolve_recursive(name, rtype).await
         } else {
             self.resolve_forwarded(name, rtype).await

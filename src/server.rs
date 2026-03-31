@@ -41,13 +41,26 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
     // Create resolver (used in resolver and both modes)
     let resolver = match cfg.server.mode {
-        ServerMode::Resolver | ServerMode::Both => Some(Resolver::new(
-            cache.clone(),
-            forwarders,
-            cfg.resolver.max_recursion_depth,
-            dnssec_validator,
-            cfg.resolver.qname_minimization,
-        )),
+        ServerMode::Resolver | ServerMode::Both => {
+            if cfg.resolver.forward_zones.is_empty() {
+                Some(Resolver::new(
+                    cache.clone(),
+                    forwarders,
+                    cfg.resolver.max_recursion_depth,
+                    dnssec_validator,
+                    cfg.resolver.qname_minimization,
+                ))
+            } else {
+                Some(Resolver::with_forward_zones(
+                    cache.clone(),
+                    forwarders,
+                    cfg.resolver.max_recursion_depth,
+                    dnssec_validator,
+                    cfg.resolver.qname_minimization,
+                    &cfg.resolver.forward_zones,
+                ))
+            }
+        }
         ServerMode::Authoritative => None,
     };
 
@@ -74,10 +87,16 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         ServerMode::Resolver => None,
     };
 
-    // Create RPZ engine
+    // Create RPZ engine and load policy zones from config
     let rpz_engine = RpzEngine::new();
-    // RPZ zones would be loaded here from config
-    // For now the engine is empty but wired in
+    for zone_cfg in &cfg.rpz.zones {
+        let zone_name = crate::protocol::name::DnsName::from_str(&zone_cfg.name)
+            .unwrap_or_else(|_| crate::protocol::name::DnsName::root());
+        match rpz_engine.load_zone_file(&zone_cfg.file, &zone_name) {
+            Ok(count) => info!(zone = %zone_cfg.name, rules = count, "RPZ zone loaded"),
+            Err(e) => tracing::error!(zone = %zone_cfg.name, error = %e, "Failed to load RPZ zone"),
+        }
+    }
 
     if cfg.security.rate_limit > 0 {
         info!(rate_limit = cfg.security.rate_limit, "Per-source rate limit configured");

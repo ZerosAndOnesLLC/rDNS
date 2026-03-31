@@ -21,7 +21,7 @@ load_rc_config $name
 : ${rdns_pidfile:="/var/run/rdns/rdns.pid"}
 
 pidfile="${rdns_pidfile}"
-command="/usr/local/bin/rdns"
+command="/usr/local/sbin/rdns"
 command_args="-c ${rdns_config}"
 
 start_precmd="rdns_precmd"
