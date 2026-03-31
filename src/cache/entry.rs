@@ -17,7 +17,8 @@ pub struct CacheEntry {
     pub original_ttl: u32,
     /// When this entry was inserted
     pub inserted_at: Instant,
-    /// Number of times this entry has been accessed
+    /// Number of times this entry has been accessed (used by old CacheStore)
+    #[allow(dead_code)]
     pub hit_count: u64,
 }
 

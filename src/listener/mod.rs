@@ -1,6 +1,8 @@
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+#[allow(dead_code)]
+pub mod udp_batch;
 
 use crate::auth::engine::{AuthEngine, AuthResult};
 use crate::cache::entry::CacheKey;
