@@ -156,14 +156,14 @@ fn socketaddr_to_sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, u32) {
         match addr {
             SocketAddr::V4(a) => {
                 let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
-                s.sin_family = libc::AF_INET as u16;
+                s.sin_family = libc::AF_INET as _;
                 s.sin_port = a.port().to_be();
                 s.sin_addr.s_addr = u32::from(*a.ip()).to_be();
                 (storage, std::mem::size_of::<libc::sockaddr_in>() as u32)
             }
             SocketAddr::V6(a) => {
                 let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
-                s.sin6_family = libc::AF_INET6 as u16;
+                s.sin6_family = libc::AF_INET6 as _;
                 s.sin6_port = a.port().to_be();
                 s.sin6_addr.s6_addr = a.ip().octets();
                 (storage, std::mem::size_of::<libc::sockaddr_in6>() as u32)
@@ -190,14 +190,14 @@ pub fn socketaddr_to_sockaddr_raw(addr: &SocketAddr) -> (libc::sockaddr_storage,
         match addr {
             SocketAddr::V4(a) => {
                 let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
-                s.sin_family = libc::AF_INET as u16;
+                s.sin_family = libc::AF_INET as _;
                 s.sin_port = a.port().to_be();
                 s.sin_addr.s_addr = u32::from(*a.ip()).to_be();
                 (storage, std::mem::size_of::<libc::sockaddr_in>() as u32)
             }
             SocketAddr::V6(a) => {
                 let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
-                s.sin6_family = libc::AF_INET6 as u16;
+                s.sin6_family = libc::AF_INET6 as _;
                 s.sin6_port = a.port().to_be();
                 s.sin6_addr.s6_addr = a.ip().octets();
                 (storage, std::mem::size_of::<libc::sockaddr_in6>() as u32)
