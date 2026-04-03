@@ -1,5 +1,5 @@
 use super::algorithms::{DnskeyData, RrsigData};
-use super::trust_anchor::{ValidationStatus, root_trust_anchors};
+use super::trust_anchor::ValidationStatus;
 use crate::protocol::message::Message;
 use crate::protocol::rdata::RData;
 use crate::protocol::record::RecordType;
@@ -116,20 +116,10 @@ impl DnssecValidator {
             // For now, we check structural validity only.
         }
 
-        // If we have DNSKEY records, check chain of trust to root
-        if !dnskeys.is_empty() {
-            let anchors = root_trust_anchors();
-            let has_trusted_key = dnskeys.iter().any(|key| {
-                anchors.iter().any(|anchor| anchor.matches_key(key))
-            });
-
-            if has_trusted_key {
-                // Root key validated
-                return ValidationStatus::Secure;
-            }
-        }
-
-        // Structural validation passed but full chain not verified
+        // Cryptographic signature verification is not yet implemented.
+        // Without actual signature verification, we MUST NOT return Secure
+        // as that would set AD=1 and give clients false assurance.
+        // All structurally-valid-but-unverified responses are Indeterminate.
         ValidationStatus::Indeterminate
     }
 

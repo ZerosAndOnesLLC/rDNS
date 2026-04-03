@@ -5,6 +5,7 @@ use crate::dnssec::DnssecValidator;
 use crate::listener;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use crate::security::rate_limit::RateLimiter;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::signal;
@@ -98,8 +99,11 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         }
     }
 
+    // Create rate limiter
+    let rate_limiter = RateLimiter::new(cfg.security.rate_limit);
     if cfg.security.rate_limit > 0 {
-        info!(rate_limit = cfg.security.rate_limit, "Per-source rate limit configured");
+        info!(rate_limit = cfg.security.rate_limit, "Per-source rate limiting enforced");
+        let _cleanup_handle = rate_limiter.clone().spawn_cleanup_task();
     }
 
     let mut handles = Vec::new();
@@ -111,8 +115,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let cache = cache.clone();
         let auth = auth_engine.clone();
         let rpz = rpz_engine.clone();
+        let rl = rate_limiter.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth, rpz).await {
+            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth, rpz, rl).await {
                 tracing::error!(%addr, error = %e, "UDP listener failed");
             }
         }));
@@ -126,8 +131,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let cache = cache.clone();
         let auth = auth_engine.clone();
         let rpz = rpz_engine.clone();
+        let rl = rate_limiter.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth, rpz).await {
+            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth, rpz, rl).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));
@@ -144,9 +150,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let cache = cache.clone();
             let auth = auth_engine.clone();
             let rpz = rpz_engine.clone();
+            let rl = rate_limiter.clone();
             handles.push(tokio::spawn(async move {
                 if let Err(e) =
-                    listener::tls::serve(addr, acceptor, cache, resolver, auth, rpz).await
+                    listener::tls::serve(addr, acceptor, cache, resolver, auth, rpz, rl).await
                 {
                     tracing::error!(%addr, error = %e, "DoT listener failed");
                 }

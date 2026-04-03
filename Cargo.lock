@@ -1095,12 +1095,13 @@ dependencies = [
 
 [[package]]
 name = "rdns"
-version = "1.4.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "bytes",
  "clap",
  "dashmap",
+ "getrandom 0.2.17",
  "libc",
  "nix",
  "parking_lot",

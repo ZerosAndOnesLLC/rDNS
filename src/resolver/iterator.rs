@@ -281,17 +281,11 @@ fn build_query(id: u16, name: &DnsName, rtype: RecordType) -> Message {
     }
 }
 
-/// Generate a random query ID.
+/// Generate a cryptographically random query ID.
 pub(crate) fn rand_id() -> u16 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let s = RandomState::new();
-    let mut h = s.build_hasher();
-    h.write_u64(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64);
-    h.finish() as u16
+    let mut buf = [0u8; 2];
+    getrandom::getrandom(&mut buf).expect("getrandom failed");
+    u16::from_ne_bytes(buf)
 }
 
 #[cfg(test)]

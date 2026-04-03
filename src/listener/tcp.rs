@@ -2,6 +2,7 @@ use crate::auth::AuthEngine;
 use crate::cache::CacheStore;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use crate::security::rate_limit::RateLimiter;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -12,12 +13,17 @@ pub async fn serve(
     resolver: Option<Resolver>,
     auth: Option<AuthEngine>,
     rpz: RpzEngine,
+    rate_limiter: RateLimiter,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, "TCP listener bound");
 
     loop {
         let (stream, src) = listener.accept().await?;
+        if !rate_limiter.check(src.ip()) {
+            drop(stream);
+            continue;
+        }
         let cache = cache.clone();
         let resolver = resolver.clone();
         let auth = auth.clone();

@@ -4,6 +4,7 @@ use crate::cache::CacheStore;
 use crate::protocol::message::Message;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use crate::security::rate_limit::RateLimiter;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -16,6 +17,7 @@ struct QueryContext {
     resolver: Option<Resolver>,
     auth: Option<AuthEngine>,
     rpz: RpzEngine,
+    rate_limiter: RateLimiter,
 }
 
 pub async fn serve(
@@ -24,12 +26,14 @@ pub async fn serve(
     resolver: Option<Resolver>,
     auth: Option<AuthEngine>,
     rpz: RpzEngine,
+    rate_limiter: RateLimiter,
 ) -> anyhow::Result<()> {
     let ctx = Arc::new(QueryContext {
         cache,
         resolver,
         auth,
         rpz,
+        rate_limiter,
     });
 
     let num_workers = (num_cpus() / 2).clamp(2, 16);
@@ -84,6 +88,11 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        // Rate limit check — drop packet silently if over limit
+        if !ctx.rate_limiter.check(src.ip()) {
+            continue;
+        }
 
         // Sync fast path: cache hit, auth, RPZ — no task spawn
         if let Some(response) = try_handle_sync(&buf[..len], &ctx) {
