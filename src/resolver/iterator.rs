@@ -129,7 +129,7 @@ pub async fn iterate(
                 }
 
                 // No answers but we have authority NS records — this is a referral
-                let referral_servers = extract_referral_addresses(&resp);
+                let referral_servers = extract_referral_addresses(&resp, question_name);
                 if referral_servers.is_empty() {
                     // Try to resolve NS names from the authority section
                     let ns_names = extract_ns_names(&resp);
@@ -162,28 +162,56 @@ pub async fn iterate(
 }
 
 /// Extract IP addresses from the additional section for NS records in the authority section.
-fn extract_referral_addresses(response: &Message) -> Vec<SocketAddr> {
-    let ns_names: Vec<&DnsName> = response
+/// Performs bailiwick checking: only accepts NS records for names at or below `query_name`,
+/// and only accepts glue records for names within the delegated zone.
+fn extract_referral_addresses(response: &Message, query_name: &DnsName) -> Vec<SocketAddr> {
+    // Find the delegation point from the authority section NS records.
+    // Only accept NS records whose owner name is a parent of (or equal to) the query name.
+    let ns_records: Vec<(&DnsName, &DnsName)> = response
         .authority
         .iter()
         .filter_map(|rr| match &rr.rdata {
-            RData::NS(name) => Some(name),
+            RData::NS(ns_target) => {
+                // Bailiwick check: the NS owner must be a parent of the query name
+                if query_name.is_subdomain_of(&rr.name) {
+                    Some((&rr.name, ns_target))
+                } else {
+                    tracing::debug!(
+                        ns_owner = %rr.name,
+                        query = %query_name,
+                        "Rejected out-of-bailiwick NS record"
+                    );
+                    None
+                }
+            }
             _ => None,
         })
         .collect();
+
+    // Determine the delegation zone (the NS owner name)
+    let delegation_zone = match ns_records.first() {
+        Some((owner, _)) => *owner,
+        None => return Vec::new(),
+    };
+
+    let ns_names: Vec<&DnsName> = ns_records.iter().map(|(_, target)| *target).collect();
 
     let mut addrs = Vec::new();
 
     for rr in &response.additional {
         match &rr.rdata {
             RData::A(ip) => {
-                // Check if this A record is for one of the NS names
-                if ns_names.iter().any(|ns| **ns == rr.name) {
+                // Only accept glue for NS names that are within the delegation zone
+                if ns_names.iter().any(|ns| **ns == rr.name)
+                    && rr.name.is_subdomain_of(delegation_zone)
+                {
                     addrs.push(SocketAddr::new((*ip).into(), 53));
                 }
             }
             RData::AAAA(ip) => {
-                if ns_names.iter().any(|ns| **ns == rr.name) {
+                if ns_names.iter().any(|ns| **ns == rr.name)
+                    && rr.name.is_subdomain_of(delegation_zone)
+                {
                     addrs.push(SocketAddr::new((*ip).into(), 53));
                 }
             }
@@ -351,8 +379,15 @@ mod tests {
             }],
         };
 
-        let addrs = extract_referral_addresses(&response);
+        // Query for www.example.com — NS at example.com is in-bailiwick
+        let query_name = DnsName::from_str("www.example.com").unwrap();
+        let addrs = extract_referral_addresses(&response, &query_name);
         assert_eq!(addrs.len(), 1);
         assert_eq!(addrs[0], SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 53));
+
+        // Query for www.other.com — NS at example.com is out-of-bailiwick
+        let other_name = DnsName::from_str("www.other.com").unwrap();
+        let addrs = extract_referral_addresses(&response, &other_name);
+        assert_eq!(addrs.len(), 0);
     }
 }

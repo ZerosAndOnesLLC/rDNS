@@ -5,6 +5,7 @@ use crate::dnssec::DnssecValidator;
 use crate::listener;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use crate::security::acl::RecursionAcl;
 use crate::security::rate_limit::RateLimiter;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -106,6 +107,17 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let _cleanup_handle = rate_limiter.clone().spawn_cleanup_task();
     }
 
+    // Create recursion ACL
+    let acl = RecursionAcl::from_cidrs(&cfg.security.allow_recursion);
+    if acl.is_configured() {
+        info!(
+            entries = cfg.security.allow_recursion.len(),
+            "Recursion ACL enforced"
+        );
+    } else {
+        tracing::warn!("No allow_recursion ACL configured — recursion is open to all sources");
+    }
+
     let mut handles = Vec::new();
 
     // Start UDP listeners
@@ -116,8 +128,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let auth = auth_engine.clone();
         let rpz = rpz_engine.clone();
         let rl = rate_limiter.clone();
+        let acl = acl.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth, rpz, rl).await {
+            if let Err(e) = listener::udp::serve(addr, cache, resolver, auth, rpz, rl, acl).await {
                 tracing::error!(%addr, error = %e, "UDP listener failed");
             }
         }));
@@ -132,8 +145,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let auth = auth_engine.clone();
         let rpz = rpz_engine.clone();
         let rl = rate_limiter.clone();
+        let acl = acl.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth, rpz, rl).await {
+            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth, rpz, rl, acl).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));
@@ -151,9 +165,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let auth = auth_engine.clone();
             let rpz = rpz_engine.clone();
             let rl = rate_limiter.clone();
+            let acl = acl.clone();
             handles.push(tokio::spawn(async move {
                 if let Err(e) =
-                    listener::tls::serve(addr, acceptor, cache, resolver, auth, rpz, rl).await
+                    listener::tls::serve(addr, acceptor, cache, resolver, auth, rpz, rl, acl).await
                 {
                     tracing::error!(%addr, error = %e, "DoT listener failed");
                 }

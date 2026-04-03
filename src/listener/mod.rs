@@ -114,14 +114,43 @@ fn encode_records_with_ttl(
     }
 }
 
+/// Build a REFUSED response for clients not allowed to use recursion.
+fn build_refused_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {
+    let header = Header {
+        id,
+        qr: true,
+        opcode: crate::protocol::Opcode::from(0),
+        aa: false,
+        tc: false,
+        rd,
+        ra: false,
+        ad: false,
+        cd: false,
+        rcode: Rcode::Refused,
+        qd_count: 1,
+        an_count: 0,
+        ns_count: 0,
+        ar_count: 0,
+    };
+
+    let mut buf = Vec::with_capacity(64);
+    header.encode(&mut buf);
+    name.encode(&mut buf);
+    buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
+    buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
+    buf
+}
+
 /// Process an incoming DNS query and produce a response.
 /// Uses fast-path for cache hits to minimize allocations.
+/// `recursion_allowed` controls whether the source IP is permitted to use the resolver.
 async fn handle_query(
     buf: &[u8],
     cache: &CacheStore,
     resolver: &Option<Resolver>,
     auth: &Option<AuthEngine>,
     rpz: &RpzEngine,
+    recursion_allowed: bool,
 ) -> Vec<u8> {
     // Fast path: parse just the question from wire format
     if let Some((name, qtype, qclass, id, rd)) = parse_query_fast(buf) {
@@ -135,7 +164,7 @@ async fn handle_query(
             }
         }
 
-        // Authoritative check
+        // Authoritative check (always allowed regardless of ACL)
         if let Some(auth_engine) = auth {
             match auth_engine.query(&name, qtype, qclass) {
                 AuthResult::Answer(mut response) => {
@@ -147,12 +176,17 @@ async fn handle_query(
             }
         }
 
-        // Resolver (checks cache internally first)
+        // Resolver (checks cache internally first) — only if source is allowed
         if let Some(resolver) = resolver {
-            let mut response = resolver.resolve(&name, qtype, qclass).await;
-            response.header.id = id;
-            response.header.rd = rd;
-            return response.encode();
+            if recursion_allowed {
+                let mut response = resolver.resolve(&name, qtype, qclass).await;
+                response.header.id = id;
+                response.header.rd = rd;
+                return response.encode();
+            } else {
+                // Client wants recursion but is not allowed — return REFUSED
+                return build_refused_fast(id, rd, &name, qtype, qclass);
+            }
         }
 
         // Direct cache lookup (no resolver mode)
@@ -178,6 +212,48 @@ async fn handle_query(
             Message::formerr(id).encode()
         }
     }
+}
+
+/// Maximum UDP response size per RFC 1035 (without EDNS0).
+const MAX_UDP_PAYLOAD: usize = 512;
+
+/// Truncate a UDP response if it exceeds MAX_UDP_PAYLOAD.
+/// Sets the TC (truncation) bit and strips answer/authority/additional sections.
+fn truncate_udp_response(response: &mut Vec<u8>) {
+    if response.len() <= MAX_UDP_PAYLOAD {
+        return;
+    }
+    // Set TC bit in the header flags (byte 2, bit 1 of the high nibble)
+    if response.len() >= HEADER_SIZE {
+        response[2] |= 0x02; // TC bit is bit 9 of flags = byte 2, bit 1
+
+        // Zero out answer, authority, additional counts (keep question count)
+        // AN count at bytes 6-7, NS count at 8-9, AR count at 10-11
+        response[6] = 0;
+        response[7] = 0;
+        response[8] = 0;
+        response[9] = 0;
+        response[10] = 0;
+        response[11] = 0;
+    }
+    // Keep only header + question section.
+    // Question section starts at byte 12 and we need to find its end.
+    let mut pos = HEADER_SIZE;
+    // Walk the question name labels
+    while pos < response.len() {
+        let len = response[pos] as usize;
+        if len == 0 {
+            pos += 1; // root label
+            break;
+        }
+        if len & 0xC0 == 0xC0 {
+            pos += 2; // compression pointer
+            break;
+        }
+        pos += 1 + len;
+    }
+    pos += 4; // QTYPE (2) + QCLASS (2)
+    response.truncate(pos.min(response.len()));
 }
 
 fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {

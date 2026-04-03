@@ -4,6 +4,7 @@ use crate::cache::CacheStore;
 use crate::protocol::message::Message;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use crate::security::acl::RecursionAcl;
 use crate::security::rate_limit::RateLimiter;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ struct QueryContext {
     auth: Option<AuthEngine>,
     rpz: RpzEngine,
     rate_limiter: RateLimiter,
+    acl: RecursionAcl,
 }
 
 pub async fn serve(
@@ -27,6 +29,7 @@ pub async fn serve(
     auth: Option<AuthEngine>,
     rpz: RpzEngine,
     rate_limiter: RateLimiter,
+    acl: RecursionAcl,
 ) -> anyhow::Result<()> {
     let ctx = Arc::new(QueryContext {
         cache,
@@ -34,6 +37,7 @@ pub async fn serve(
         auth,
         rpz,
         rate_limiter,
+        acl,
     });
 
     let num_workers = (num_cpus() / 2).clamp(2, 16);
@@ -94,8 +98,11 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
             continue;
         }
 
+        let recursion_allowed = ctx.acl.is_allowed(src.ip());
+
         // Sync fast path: cache hit, auth, RPZ — no task spawn
-        if let Some(response) = try_handle_sync(&buf[..len], &ctx) {
+        if let Some(mut response) = try_handle_sync(&buf[..len], &ctx, recursion_allowed) {
+            super::truncate_udp_response(&mut response);
             let _ = socket.send_to(&response, src).await;
             continue;
         }
@@ -105,14 +112,16 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
         let socket = socket.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
-            let resp = super::handle_query(
+            let mut resp = super::handle_query(
                 &query_data,
                 &ctx.cache,
                 &ctx.resolver,
                 &ctx.auth,
                 &ctx.rpz,
+                recursion_allowed,
             )
             .await;
+            super::truncate_udp_response(&mut resp);
             let _ = socket.send_to(&resp, src).await;
         });
     }
@@ -120,7 +129,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
 
 /// Synchronous fast path for cache hits, auth answers, RPZ blocks.
 #[inline(always)]
-fn try_handle_sync(buf: &[u8], ctx: &QueryContext) -> Option<Vec<u8>> {
+fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> Option<Vec<u8>> {
     let (name, qtype, qclass, id, rd) = super::parse_query_fast(buf)?;
 
     // RPZ
@@ -132,7 +141,7 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext) -> Option<Vec<u8>> {
         }
     }
 
-    // Authoritative
+    // Authoritative (always allowed)
     if let Some(ref auth_engine) = ctx.auth {
         match auth_engine.query(&name, qtype, qclass) {
             AuthResult::Answer(mut response) => {
@@ -142,6 +151,11 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext) -> Option<Vec<u8>> {
             }
             AuthResult::NotAuthoritative => {}
         }
+    }
+
+    // If recursion is not allowed, don't check cache from resolver or fall through to resolver
+    if !recursion_allowed && ctx.resolver.is_some() {
+        return Some(super::build_refused_fast(id, rd, &name, qtype, qclass));
     }
 
     // Cache

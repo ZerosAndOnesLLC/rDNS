@@ -85,7 +85,7 @@ impl FastCacheStore {
         None
     }
 
-    /// Insert a cache entry with TTL clamping.
+    /// Insert a cache entry with TTL clamping and size enforcement.
     pub fn insert(&self, key: CacheKey, mut entry: CacheEntry) {
         let ttl = if entry.negative {
             entry.original_ttl.min(self.inner.negative_ttl)
@@ -98,8 +98,37 @@ impl FastCacheStore {
         entry.original_ttl = ttl;
 
         let idx = Self::shard_idx(&key);
+        let max_per_shard = self.inner.max_entries / NUM_SHARDS + 1;
         {
             let mut shard = self.inner.shards[idx].write();
+
+            // Enforce max size: evict expired entries first, then random if still over
+            if shard.len() >= max_per_shard {
+                let before = shard.len();
+                shard.retain(|_, e| !e.is_expired());
+                let evicted = before - shard.len();
+                if evicted > 0 {
+                    self.inner
+                        .evictions
+                        .fetch_add(evicted as u64, Ordering::Relaxed);
+                }
+            }
+            if shard.len() >= max_per_shard {
+                // Still over capacity — evict ~10% of oldest entries
+                let to_evict = max_per_shard / 10 + 1;
+                let keys_to_evict: Vec<CacheKey> = shard
+                    .iter()
+                    .take(to_evict)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in &keys_to_evict {
+                    shard.remove(k);
+                }
+                self.inner
+                    .evictions
+                    .fetch_add(keys_to_evict.len() as u64, Ordering::Relaxed);
+            }
+
             shard.insert(key, entry);
         }
         self.inner.insertions.fetch_add(1, Ordering::Relaxed);

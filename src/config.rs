@@ -183,6 +183,12 @@ pub struct SecurityConfig {
 
     #[serde(default = "default_rate_limit")]
     pub rate_limit: u32,
+
+    /// CIDR ranges allowed to make recursive queries.
+    /// If empty, all sources are allowed (open resolver — not recommended for public-facing servers).
+    /// Example: ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "192.168.0.0/16"]
+    #[serde(default)]
+    pub allow_recursion: Vec<String>,
 }
 
 // --- Defaults ---
@@ -318,6 +324,7 @@ impl Default for SecurityConfig {
         Self {
             sandbox: true,
             rate_limit: default_rate_limit(),
+            allow_recursion: Vec::new(),
         }
     }
 }

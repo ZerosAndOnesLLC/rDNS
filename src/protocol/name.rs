@@ -173,6 +173,17 @@ impl DnsName {
     pub fn labels(&self) -> &[String] {
         &self.labels
     }
+
+    /// Check if this name is a subdomain of (or equal to) the given parent name.
+    /// e.g., "www.example.com" is a subdomain of "example.com".
+    pub fn is_subdomain_of(&self, parent: &DnsName) -> bool {
+        if parent.labels.len() > self.labels.len() {
+            return false;
+        }
+        // Compare from the right (TLD end)
+        let offset = self.labels.len() - parent.labels.len();
+        self.labels[offset..] == parent.labels[..]
+    }
 }
 
 impl std::fmt::Display for DnsName {

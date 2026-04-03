@@ -2,14 +2,29 @@ use crate::auth::AuthEngine;
 use crate::cache::CacheStore;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use crate::security::acl::RecursionAcl;
 use crate::security::rate_limit::RateLimiter;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
+
+/// Maximum concurrent DoT connections.
+const MAX_DOT_CONNECTIONS: usize = 256;
+
+/// Timeout for TLS handshake completion.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Idle timeout for DoT connections waiting for the next query.
+const DOT_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Timeout for reading a single DNS query payload.
+const DOT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Load TLS certificate and key, returning a configured TlsAcceptor.
 pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<TlsAcceptor> {
@@ -48,9 +63,12 @@ pub async fn serve(
     auth: Option<AuthEngine>,
     rpz: RpzEngine,
     rate_limiter: RateLimiter,
+    acl: RecursionAcl,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "DNS-over-TLS listener bound");
+    let semaphore = Arc::new(Semaphore::new(MAX_DOT_CONNECTIONS));
+    let acl = Arc::new(acl);
+    tracing::info!(%addr, max_connections = MAX_DOT_CONNECTIONS, "DNS-over-TLS listener bound");
 
     loop {
         let (stream, src) = listener.accept().await?;
@@ -58,24 +76,48 @@ pub async fn serve(
             drop(stream);
             continue;
         }
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::debug!(%src, "DoT connection rejected: at capacity");
+                drop(stream);
+                continue;
+            }
+        };
+
         let acceptor = acceptor.clone();
         let cache = cache.clone();
         let resolver = resolver.clone();
         let auth = auth.clone();
         let rpz = rpz.clone();
+        let recursion_allowed = acl.is_allowed(src.ip());
 
         tokio::spawn(async move {
-            match acceptor.accept(stream).await {
-                Ok(tls_stream) => {
-                    if let Err(e) =
-                        handle_tls_connection(tls_stream, &cache, &resolver, &auth, &rpz).await
-                    {
-                        tracing::debug!(%src, error = %e, "DoT connection error");
-                    }
-                }
-                Err(e) => {
+            let _permit = permit; // held until task completes
+
+            // Timeout the TLS handshake
+            let tls_stream = match tokio::time::timeout(
+                TLS_HANDSHAKE_TIMEOUT,
+                acceptor.accept(stream),
+            )
+            .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
                     tracing::debug!(%src, error = %e, "TLS handshake failed");
+                    return;
                 }
+                Err(_) => {
+                    tracing::debug!(%src, "TLS handshake timed out");
+                    return;
+                }
+            };
+
+            if let Err(e) =
+                handle_tls_connection(tls_stream, &cache, &resolver, &auth, &rpz, recursion_allowed).await
+            {
+                tracing::debug!(%src, error = %e, "DoT connection error");
             }
         });
     }
@@ -87,12 +129,15 @@ async fn handle_tls_connection(
     resolver: &Option<Resolver>,
     auth: &Option<AuthEngine>,
     rpz: &RpzEngine,
+    recursion_allowed: bool,
 ) -> anyhow::Result<()> {
     loop {
-        let len = match stream.read_u16().await {
-            Ok(len) => len as usize,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(e) => return Err(e.into()),
+        // Idle timeout: wait for next query
+        let len = match tokio::time::timeout(DOT_IDLE_TIMEOUT, stream.read_u16()).await {
+            Ok(Ok(len)) => len as usize,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Ok(()), // idle timeout
         };
 
         if len == 0 || len > 65535 {
@@ -100,9 +145,15 @@ async fn handle_tls_connection(
         }
 
         let mut buf = vec![0u8; len];
-        stream.read_exact(&mut buf).await?;
+        match tokio::time::timeout(DOT_READ_TIMEOUT, stream.read_exact(&mut buf)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                anyhow::bail!("DoT read timeout");
+            }
+        }
 
-        let response = super::handle_query(&buf, cache, resolver, auth, rpz).await;
+        let response = super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed).await;
 
         stream.write_u16(response.len() as u16).await?;
         stream.write_all(&response).await?;
