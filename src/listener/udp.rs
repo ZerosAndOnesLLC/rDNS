@@ -102,8 +102,11 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
 
         // Sync fast path: cache hit, auth, RPZ — no task spawn
         if let Some(mut response) = try_handle_sync(&buf[..len], &ctx, recursion_allowed) {
-            super::truncate_udp_response(&mut response);
-            let _ = socket.send_to(&response, src).await;
+            if !response.is_empty() {
+                super::truncate_udp_response(&mut response);
+                let _ = socket.send_to(&response, src).await;
+            }
+            // Empty response = RPZ Drop — silently discard
             continue;
         }
 
@@ -121,8 +124,10 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
                 recursion_allowed,
             )
             .await;
-            super::truncate_udp_response(&mut resp);
-            let _ = socket.send_to(&resp, src).await;
+            if !resp.is_empty() {
+                super::truncate_udp_response(&mut resp);
+                let _ = socket.send_to(&resp, src).await;
+            }
         });
     }
 }
@@ -134,6 +139,10 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> O
 
     // RPZ
     if let Some(action) = ctx.rpz.check(&name) {
+        // Drop action: return empty vec (caller must not send anything)
+        if action == crate::rpz::policy::PolicyAction::Drop {
+            return Some(Vec::new());
+        }
         if let Ok(query) = Message::decode(buf) {
             if let Some(response) = ctx.rpz.apply_action(&action, &query) {
                 return Some(response.encode());

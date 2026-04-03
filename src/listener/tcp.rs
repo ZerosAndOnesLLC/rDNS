@@ -97,6 +97,11 @@ async fn handle_connection_inner(
 
         let response = super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed).await;
 
+        // Empty response = RPZ Drop — close connection silently
+        if response.is_empty() {
+            return Ok(());
+        }
+
         stream.write_u16(response.len() as u16).await?;
         stream.write_all(&response).await?;
         stream.flush().await?;

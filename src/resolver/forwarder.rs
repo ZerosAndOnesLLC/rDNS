@@ -60,7 +60,17 @@ impl ForwarderPool {
         use crate::protocol::rcode::Rcode;
         use crate::protocol::record::{Question, RecordClass};
 
-        let id = super::iterator::rand_id();
+        // Generate a unique query ID, avoiding collisions with in-flight queries
+        let id = {
+            let pending = self.inner.pending.lock().await;
+            let mut id = super::iterator::rand_id();
+            let mut attempts = 0;
+            while pending.contains_key(&id) && attempts < 16 {
+                id = super::iterator::rand_id();
+                attempts += 1;
+            }
+            id
+        };
 
         let msg = Message {
             header: Header {

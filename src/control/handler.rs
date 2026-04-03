@@ -25,6 +25,17 @@ impl ControlServer {
         }
 
         let listener = UnixListener::bind(socket_path)?;
+
+        // Restrict socket permissions to owner and group only (0660)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o660);
+            if let Err(e) = std::fs::set_permissions(socket_path, perms) {
+                tracing::warn!(error = %e, "Could not set control socket permissions");
+            }
+        }
+
         tracing::info!(path = %socket_path.display(), "Control socket listening");
 
         loop {

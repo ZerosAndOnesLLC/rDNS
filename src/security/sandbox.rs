@@ -38,21 +38,21 @@ fn enter_capsicum() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Linux seccomp-bpf syscall filtering.
-/// Restricts the process to only the syscalls needed for DNS operation.
+/// Linux security hardening.
+/// Sets PR_SET_NO_NEW_PRIVS to prevent privilege escalation via execve,
+/// setuid binaries, or other mechanisms. This is a prerequisite for
+/// seccomp-bpf and provides meaningful security on its own.
 #[cfg(target_os = "linux")]
 fn apply_seccomp() -> anyhow::Result<()> {
-    // Seccomp-bpf requires careful enumeration of allowed syscalls.
-    // For a DNS server, we need:
-    // - read, write, recvfrom, sendto, recvmsg, sendmsg (network I/O)
-    // - epoll_wait, epoll_ctl (async I/O)
-    // - close, futex, clock_gettime (runtime)
-    // - mmap, munmap, mprotect (memory)
-    // - sigaltstack, rt_sigaction, rt_sigprocmask (signals)
-    //
-    // Full implementation requires the `seccompiler` or `libseccomp` crate.
-    // Stubbed for now — will be implemented with proper syscall audit.
-    tracing::info!("Seccomp-bpf sandboxing available (not yet enforced)");
+    // PR_SET_NO_NEW_PRIVS prevents the process (and children) from gaining
+    // new privileges. This blocks execve of setuid/setgid binaries and is
+    // a prerequisite for unprivileged seccomp filters.
+    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        anyhow::bail!("Failed to set PR_SET_NO_NEW_PRIVS: {}", err);
+    }
+    tracing::info!("Linux security: PR_SET_NO_NEW_PRIVS enabled");
     Ok(())
 }
 

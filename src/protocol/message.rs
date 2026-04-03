@@ -31,8 +31,12 @@ impl Message {
 
         let mut offset = HEADER_SIZE;
 
+        // Cap preallocation to prevent memory abuse from malicious packets
+        // claiming huge section counts with minimal data.
+        const MAX_PREALLOC: usize = 64;
+
         // Decode questions
-        let mut questions = Vec::with_capacity(header.qd_count as usize);
+        let mut questions = Vec::with_capacity((header.qd_count as usize).min(MAX_PREALLOC));
         for _ in 0..header.qd_count {
             let (q, consumed) = Question::decode(buf, offset)?;
             offset += consumed;
@@ -40,7 +44,7 @@ impl Message {
         }
 
         // Decode answers
-        let mut answers = Vec::with_capacity(header.an_count as usize);
+        let mut answers = Vec::with_capacity((header.an_count as usize).min(MAX_PREALLOC));
         for _ in 0..header.an_count {
             let (rr, consumed) = ResourceRecord::decode(buf, offset)?;
             offset += consumed;
@@ -48,7 +52,7 @@ impl Message {
         }
 
         // Decode authority
-        let mut authority = Vec::with_capacity(header.ns_count as usize);
+        let mut authority = Vec::with_capacity((header.ns_count as usize).min(MAX_PREALLOC));
         for _ in 0..header.ns_count {
             let (rr, consumed) = ResourceRecord::decode(buf, offset)?;
             offset += consumed;
@@ -56,7 +60,7 @@ impl Message {
         }
 
         // Decode additional
-        let mut additional = Vec::with_capacity(header.ar_count as usize);
+        let mut additional = Vec::with_capacity((header.ar_count as usize).min(MAX_PREALLOC));
         for _ in 0..header.ar_count {
             let (rr, consumed) = ResourceRecord::decode(buf, offset)?;
             offset += consumed;

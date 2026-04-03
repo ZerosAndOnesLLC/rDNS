@@ -156,6 +156,10 @@ async fn handle_query(
     if let Some((name, qtype, qclass, id, rd)) = parse_query_fast(buf) {
         // RPZ check
         if let Some(action) = rpz.check(&name) {
+            // Drop action: return empty response (caller must not send anything)
+            if action == crate::rpz::policy::PolicyAction::Drop {
+                return Vec::new();
+            }
             // Need full decode for RPZ response building
             if let Ok(query) = Message::decode(buf) {
                 if let Some(response) = rpz.apply_action(&action, &query) {

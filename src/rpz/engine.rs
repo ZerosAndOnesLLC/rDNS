@@ -229,29 +229,8 @@ impl RpzEngine {
             }
             PolicyAction::Passthru => None, // Let normal resolution proceed
             PolicyAction::Drop => {
-                // Return empty — caller should not send a response
-                Some(Message {
-                    header: Header {
-                        id: 0,
-                        qr: true,
-                        opcode: Opcode::Query,
-                        aa: false,
-                        tc: false,
-                        rd: false,
-                        ra: false,
-                        ad: false,
-                        cd: false,
-                        rcode: Rcode::NoError,
-                        qd_count: 0,
-                        an_count: 0,
-                        ns_count: 0,
-                        ar_count: 0,
-                    },
-                    questions: vec![],
-                    answers: vec![],
-                    authority: vec![],
-                    additional: vec![],
-                })
+                // Return None — caller must not send any response (silent drop)
+                None
             }
             PolicyAction::RedirectA(ip) => {
                 let answer = ResourceRecord {

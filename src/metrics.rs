@@ -13,9 +13,35 @@ pub async fn serve(addr: SocketAddr, cache: CacheStore) -> anyhow::Result<()> {
         let cache = cache.clone();
 
         tokio::spawn(async move {
-            // Read the HTTP request (we don't need to parse it fully)
+            // Read the HTTP request line to validate the path
             let mut buf = vec![0u8; 4096];
-            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+            let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
+                Ok(n) => n,
+                Err(_) => return,
+            };
+
+            // Parse the request line (e.g., "GET /metrics HTTP/1.1\r\n...")
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("");
+
+            if path != "/metrics" {
+                let body = "404 Not Found\n";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\n\
+                     Content-Length: {}\r\n\
+                     Connection: close\r\n\
+                     \r\n\
+                     {}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
 
             let metrics = build_metrics(&cache);
             let response = format!(
