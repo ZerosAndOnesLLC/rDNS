@@ -65,11 +65,18 @@ impl RateLimiter {
         let shard_idx = shard_for_ip(&ip);
         let mut shard = self.inner.shards[shard_idx].lock();
 
-        // Prevent memory exhaustion: cap entries per shard
+        // Prevent memory exhaustion: cap entries per shard.
+        // When full, evict the oldest entry to make room instead of rejecting.
         const MAX_ENTRIES_PER_SHARD: usize = 10_000;
         if shard.len() >= MAX_ENTRIES_PER_SHARD && !shard.contains_key(&ip) {
-            // Shard is full and this is a new IP — reject to prevent memory exhaustion
-            return false;
+            // Evict the oldest entry
+            if let Some(oldest_ip) = shard
+                .iter()
+                .min_by_key(|(_, b)| b.last_refill)
+                .map(|(ip, _)| *ip)
+            {
+                shard.remove(&oldest_ip);
+            }
         }
 
         let now = Instant::now();

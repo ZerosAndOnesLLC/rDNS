@@ -91,17 +91,26 @@ impl RData {
             }
 
             RecordType::NS => {
-                let (name, _) = DnsName::decode(buf, offset)?;
+                let (name, consumed) = DnsName::decode(buf, offset)?;
+                if consumed > rdlength {
+                    return Err(RDataError::TooShort("NS"));
+                }
                 Ok(Self::NS(name))
             }
 
             RecordType::CNAME => {
-                let (name, _) = DnsName::decode(buf, offset)?;
+                let (name, consumed) = DnsName::decode(buf, offset)?;
+                if consumed > rdlength {
+                    return Err(RDataError::TooShort("CNAME"));
+                }
                 Ok(Self::CNAME(name))
             }
 
             RecordType::PTR => {
-                let (name, _) = DnsName::decode(buf, offset)?;
+                let (name, consumed) = DnsName::decode(buf, offset)?;
+                if consumed > rdlength {
+                    return Err(RDataError::TooShort("PTR"));
+                }
                 Ok(Self::PTR(name))
             }
 
@@ -110,13 +119,22 @@ impl RData {
                     return Err(RDataError::TooShort("MX"));
                 }
                 let preference = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
-                let (exchange, _) = DnsName::decode(buf, offset + 2)?;
+                let (exchange, consumed) = DnsName::decode(buf, offset + 2)?;
+                if 2 + consumed > rdlength {
+                    return Err(RDataError::TooShort("MX"));
+                }
                 Ok(Self::MX { preference, exchange })
             }
 
             RecordType::SOA => {
                 let (mname, mname_len) = DnsName::decode(buf, offset)?;
+                if mname_len > rdlength {
+                    return Err(RDataError::TooShort("SOA mname"));
+                }
                 let (rname, rname_len) = DnsName::decode(buf, offset + mname_len)?;
+                if mname_len + rname_len > rdlength {
+                    return Err(RDataError::TooShort("SOA rname"));
+                }
                 let pos = offset + mname_len + rname_len;
                 if pos + 20 > rdata_end {
                     return Err(RDataError::TooShort("SOA"));
@@ -162,7 +180,10 @@ impl RData {
                 let priority = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
                 let weight = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]);
                 let port = u16::from_be_bytes([buf[offset + 4], buf[offset + 5]]);
-                let (target, _) = DnsName::decode(buf, offset + 6)?;
+                let (target, consumed) = DnsName::decode(buf, offset + 6)?;
+                if 6 + consumed > rdlength {
+                    return Err(RDataError::TooShort("SRV"));
+                }
                 Ok(Self::SRV(SrvData { priority, weight, port, target }))
             }
 
@@ -220,11 +241,10 @@ impl RData {
             }
             Self::TXT(strings) => {
                 for s in strings {
-                    // DNS TXT strings are limited to 255 bytes each; split longer ones
-                    for chunk in s.chunks(255) {
-                        buf.push(chunk.len() as u8);
-                        buf.extend_from_slice(chunk);
-                    }
+                    // DNS TXT strings are limited to 255 bytes; truncate if longer
+                    let len = s.len().min(255);
+                    buf.push(len as u8);
+                    buf.extend_from_slice(&s[..len]);
                 }
             }
             Self::SRV(srv) => {

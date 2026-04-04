@@ -156,7 +156,7 @@ async fn handle_tls_connection(
             Err(_) => return Ok(()), // idle timeout
         };
 
-        if len == 0 || len > 4096 {
+        if len == 0 || len > 16384 {
             return Ok(());
         }
 

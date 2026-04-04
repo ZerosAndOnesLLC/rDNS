@@ -97,7 +97,7 @@ async fn handle_connection_inner(
             Err(_) => return Ok(()), // idle timeout — close cleanly
         };
 
-        if len == 0 || len > 4096 {
+        if len == 0 || len > 16384 {
             return Ok(());
         }
 

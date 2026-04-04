@@ -19,7 +19,6 @@ const MAX_UDP_INFLIGHT: usize = 4096;
 
 /// Simple DNS Response Rate Limiting (RRL).
 /// Throttles identical responses to the same source prefix.
-#[allow(dead_code)]
 struct ResponseRateLimiter {
     /// (source /24 prefix, qname hash, rcode) -> (count, window_start)
     state: Mutex<HashMap<(u32, u64, u8), (u32, Instant)>>,
@@ -36,7 +35,6 @@ impl ResponseRateLimiter {
     }
 
     /// Check if this response should be sent. Returns false if rate-limited.
-    #[allow(dead_code)]
     fn check(&self, src: &std::net::SocketAddr, qname_hash: u64, rcode: u8) -> bool {
         if self.limit == 0 {
             return true;
@@ -54,6 +52,11 @@ impl ResponseRateLimiter {
         let key = (prefix, qname_hash, rcode);
         let now = Instant::now();
         let mut state = self.state.lock();
+        // Cap entries to prevent memory exhaustion
+        const MAX_RRL_ENTRIES: usize = 100_000;
+        if state.len() >= MAX_RRL_ENTRIES && !state.contains_key(&key) {
+            return false;
+        }
         let entry = state.entry(key).or_insert((0, now));
         if now.duration_since(entry.1).as_secs() >= 1 {
             entry.0 = 1;
@@ -181,7 +184,12 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
         if let Some(mut response) = try_handle_sync(&buf[..len], &ctx, recursion_allowed) {
             if !response.is_empty() {
                 super::truncate_udp_response(&mut response);
-                let _ = socket.send_to(&response, src).await;
+                // RRL check before sending
+                let qname_hash = qname_hash_from_buf(&buf[..len]);
+                let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
+                if ctx.rrl.check(&src, qname_hash, rcode) {
+                    let _ = socket.send_to(&response, src).await;
+                }
             }
             // Empty response = RPZ Drop — silently discard
             continue;
@@ -209,7 +217,12 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
             .await;
             if !resp.is_empty() {
                 super::truncate_udp_response(&mut resp);
-                let _ = socket.send_to(&resp, src).await;
+                // RRL check before sending
+                let qname_hash = qname_hash_from_buf(&query_data);
+                let rcode = if resp.len() >= 4 { resp[3] & 0x0F } else { 0 };
+                if ctx.rrl.check(&src, qname_hash, rcode) {
+                    let _ = socket.send_to(&resp, src).await;
+                }
             }
         });
     }
@@ -305,6 +318,18 @@ fn bind_reuseport(addr: SocketAddr) -> anyhow::Result<UdpSocket> {
 
     let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
     Ok(UdpSocket::from_std(std_socket)?)
+}
+
+/// Quick hash of the QNAME from a raw DNS query buffer for RRL keying.
+fn qname_hash_from_buf(buf: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // Hash the question section bytes (starting at offset 12)
+    if buf.len() > 12 {
+        let qsection = &buf[12..buf.len().min(128)];
+        qsection.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn num_cpus() -> usize {

@@ -140,8 +140,18 @@ impl DnsName {
 
             wire_len += 1 + label_len; // length byte + label data
 
-            let label = String::from_utf8_lossy(&buf[label_start..label_end])
-                .to_ascii_lowercase();
+            // DNS labels are octets; use lossy conversion but hex-encode non-UTF8
+            // bytes to prevent collisions between different binary labels
+            let label = match std::str::from_utf8(&buf[label_start..label_end]) {
+                Ok(s) => s.to_ascii_lowercase(),
+                Err(_) => {
+                    // Hex-encode binary labels to preserve uniqueness
+                    buf[label_start..label_end]
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>()
+                }
+            };
 
             labels.push(label);
             pos = label_end;

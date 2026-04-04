@@ -238,8 +238,8 @@ impl ResourceRecord {
         // Encode rdata to a temp buffer to get the length
         let mut rdata_buf = Vec::new();
         self.rdata.encode(&mut rdata_buf);
-        let rdlen = rdata_buf.len().min(65535) as u16;
-        buf.extend_from_slice(&rdlen.to_be_bytes());
-        buf.extend_from_slice(&rdata_buf);
+        let rdlen = rdata_buf.len().min(65535);
+        buf.extend_from_slice(&(rdlen as u16).to_be_bytes());
+        buf.extend_from_slice(&rdata_buf[..rdlen]);
     }
 }

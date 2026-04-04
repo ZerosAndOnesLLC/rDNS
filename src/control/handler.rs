@@ -28,12 +28,15 @@ impl ControlServer {
         #[cfg(unix)]
         let old_umask = unsafe { libc::umask(0o117) }; // Creates socket with 0660
 
-        let listener = UnixListener::bind(socket_path)?;
+        let bind_result = UnixListener::bind(socket_path);
 
+        // Always restore umask, even on bind failure
         #[cfg(unix)]
         unsafe {
             libc::umask(old_umask);
-        } // Restore original umask
+        }
+
+        let listener = bind_result?;
 
         tracing::info!(path = %socket_path.display(), "Control socket listening");
 

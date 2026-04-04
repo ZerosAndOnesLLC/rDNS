@@ -205,16 +205,19 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     crate::security::privilege::write_pidfile(&cfg.server.pidfile)?;
 
     // Drop privileges after all ports are bound
+    // When running as root, failure is fatal to avoid running the server with full privileges
     if let Err(e) = crate::security::privilege::drop_privileges(&cfg.server.user, &cfg.server.group)
     {
-        tracing::warn!(error = %e, "Could not drop privileges");
+        #[cfg(unix)]
+        if unsafe { libc::getuid() } == 0 {
+            anyhow::bail!("Running as root but failed to drop privileges: {}", e);
+        }
+        tracing::warn!(error = %e, "Could not drop privileges (not running as root)");
     }
 
-    // Enter platform sandbox
+    // Enter platform sandbox — fatal when explicitly enabled
     if cfg.security.sandbox {
-        if let Err(e) = crate::security::sandbox::enter_sandbox() {
-            tracing::warn!(error = %e, "Could not enter sandbox");
-        }
+        crate::security::sandbox::enter_sandbox()?;
     }
 
     info!("rDNS ready");

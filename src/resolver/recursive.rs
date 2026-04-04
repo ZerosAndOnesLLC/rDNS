@@ -135,25 +135,21 @@ impl Resolver {
     async fn get_forwarder_pool(&self) -> Option<&ForwarderPool> {
         let server = self.inner.forwarders.first()?;
         let server = *server;
-        Some(
-            self.inner
-                .forwarder_pool
-                .get_or_init(|| async {
-                    match ForwarderPool::new(server).await {
-                        Ok(pool) => {
-                            tracing::info!(%server, "Forwarder connection pool initialized");
-                            pool
-                        }
-                        Err(e) => {
-                            tracing::error!(%server, error = %e, "Failed to create forwarder pool, using single-shot");
-                            // Create a dummy that will fail — caller falls back
-                            // This shouldn't happen in practice
-                            ForwarderPool::new(server).await.unwrap()
-                        }
-                    }
-                })
-                .await,
-        )
+        // Try to initialize the pool; if it already failed, return None
+        // and let the caller fall back to single-shot forwarding.
+        if self.inner.forwarder_pool.get().is_none() {
+            match ForwarderPool::new(server).await {
+                Ok(pool) => {
+                    let _ = self.inner.forwarder_pool.set(pool);
+                    tracing::info!(%server, "Forwarder connection pool initialized");
+                }
+                Err(e) => {
+                    tracing::error!(%server, error = %e, "Failed to create forwarder pool, using single-shot");
+                    return None;
+                }
+            }
+        }
+        self.inner.forwarder_pool.get()
     }
 
     /// Resolve a DNS query. Checks cache first, then resolves recursively or forwards.
