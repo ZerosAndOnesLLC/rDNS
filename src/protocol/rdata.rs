@@ -67,6 +67,11 @@ impl RData {
     ) -> Result<Self, RDataError> {
         let rdata_end = offset + rdlength;
 
+        // Bounds guard: ensure rdata region does not extend beyond the buffer
+        if rdata_end > buf.len() {
+            return Err(RDataError::TooShort("rdata extends beyond buffer"));
+        }
+
         match rtype {
             RecordType::A => {
                 if rdlength != 4 {
@@ -215,8 +220,11 @@ impl RData {
             }
             Self::TXT(strings) => {
                 for s in strings {
-                    buf.push(s.len() as u8);
-                    buf.extend_from_slice(s);
+                    // DNS TXT strings are limited to 255 bytes each; split longer ones
+                    for chunk in s.chunks(255) {
+                        buf.push(chunk.len() as u8);
+                        buf.extend_from_slice(chunk);
+                    }
                 }
             }
             Self::SRV(srv) => {
@@ -227,7 +235,7 @@ impl RData {
             }
             Self::CAA(caa) => {
                 buf.push(caa.flags);
-                buf.push(caa.tag.len() as u8);
+                buf.push(caa.tag.len().min(255) as u8);
                 buf.extend_from_slice(caa.tag.as_bytes());
                 buf.extend_from_slice(&caa.value);
             }

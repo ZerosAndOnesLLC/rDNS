@@ -26,6 +26,12 @@ const DOT_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for reading a single DNS query payload.
 const DOT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Timeout for writing a response back to the client.
+const DOT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for overall query resolution.
+const DOT_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Load TLS certificate and key, returning a configured TlsAcceptor.
 pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<TlsAcceptor> {
     use rustls_pemfile::{certs, pkcs8_private_keys};
@@ -68,6 +74,7 @@ pub async fn serve(
     let listener = TcpListener::bind(addr).await?;
     let semaphore = Arc::new(Semaphore::new(MAX_DOT_CONNECTIONS));
     let acl = Arc::new(acl);
+    let rate_limiter = Arc::new(rate_limiter);
     tracing::info!(%addr, max_connections = MAX_DOT_CONNECTIONS, "DNS-over-TLS listener bound");
 
     loop {
@@ -91,6 +98,7 @@ pub async fn serve(
         let resolver = resolver.clone();
         let auth = auth.clone();
         let rpz = rpz.clone();
+        let rate_limiter = rate_limiter.clone();
         let recursion_allowed = acl.is_allowed(src.ip());
 
         tokio::spawn(async move {
@@ -115,7 +123,7 @@ pub async fn serve(
             };
 
             if let Err(e) =
-                handle_tls_connection(tls_stream, &cache, &resolver, &auth, &rpz, recursion_allowed).await
+                handle_tls_connection(tls_stream, &cache, &resolver, &auth, &rpz, recursion_allowed, &rate_limiter, src).await
             {
                 tracing::debug!(%src, error = %e, "DoT connection error");
             }
@@ -130,8 +138,16 @@ async fn handle_tls_connection(
     auth: &Option<AuthEngine>,
     rpz: &RpzEngine,
     recursion_allowed: bool,
+    rate_limiter: &RateLimiter,
+    src: SocketAddr,
 ) -> anyhow::Result<()> {
     loop {
+        // Per-query rate limit check
+        if !rate_limiter.check(src.ip()) {
+            // Rate limited — close connection
+            return Ok(());
+        }
+
         // Idle timeout: wait for next query
         let len = match tokio::time::timeout(DOT_IDLE_TIMEOUT, stream.read_u16()).await {
             Ok(Ok(len)) => len as usize,
@@ -140,7 +156,7 @@ async fn handle_tls_connection(
             Err(_) => return Ok(()), // idle timeout
         };
 
-        if len == 0 || len > 65535 {
+        if len == 0 || len > 4096 {
             return Ok(());
         }
 
@@ -153,15 +169,28 @@ async fn handle_tls_connection(
             }
         }
 
-        let response = super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed).await;
+        let response = match tokio::time::timeout(DOT_QUERY_TIMEOUT, super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed)).await {
+            Ok(resp) => resp,
+            Err(_) => {
+                tracing::debug!("DoT query resolution timed out");
+                continue; // Skip this query, wait for next
+            }
+        };
 
         // Empty response = RPZ Drop — close connection silently
         if response.is_empty() {
             return Ok(());
         }
 
-        stream.write_u16(response.len() as u16).await?;
-        stream.write_all(&response).await?;
-        stream.flush().await?;
+        match tokio::time::timeout(DOT_WRITE_TIMEOUT, async {
+            stream.write_u16(response.len() as u16).await?;
+            stream.write_all(&response).await?;
+            stream.flush().await?;
+            Ok::<(), std::io::Error>(())
+        }).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => anyhow::bail!("DoT write timeout"),
+        }
     }
 }

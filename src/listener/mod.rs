@@ -55,7 +55,7 @@ fn build_cached_response_fast(
     qtype: RecordType,
     qclass: RecordClass,
 ) -> Vec<u8> {
-    let rcode = if entry.negative { Rcode::NxDomain } else { Rcode::NoError };
+    let rcode = if entry.negative { entry.negative_rcode } else { Rcode::NoError };
     let remaining_ttl = entry.remaining_ttl();
 
     let header = Header {

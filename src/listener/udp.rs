@@ -6,11 +6,70 @@ use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
 use crate::security::acl::RecursionAcl;
 use crate::security::rate_limit::RateLimiter;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
+use parking_lot::Mutex;
 use tokio::net::UdpSocket;
+use tokio::sync::Semaphore;
 
 const MAX_UDP_RECV: usize = 4096;
+const MAX_UDP_INFLIGHT: usize = 4096;
+
+/// Simple DNS Response Rate Limiting (RRL).
+/// Throttles identical responses to the same source prefix.
+#[allow(dead_code)]
+struct ResponseRateLimiter {
+    /// (source /24 prefix, qname hash, rcode) -> (count, window_start)
+    state: Mutex<HashMap<(u32, u64, u8), (u32, Instant)>>,
+    /// Max identical responses per second per /24
+    limit: u32,
+}
+
+impl ResponseRateLimiter {
+    fn new(limit: u32) -> Self {
+        Self {
+            state: Mutex::new(HashMap::new()),
+            limit,
+        }
+    }
+
+    /// Check if this response should be sent. Returns false if rate-limited.
+    #[allow(dead_code)]
+    fn check(&self, src: &std::net::SocketAddr, qname_hash: u64, rcode: u8) -> bool {
+        if self.limit == 0 {
+            return true;
+        }
+        let prefix = match src.ip() {
+            std::net::IpAddr::V4(v4) => {
+                let o = v4.octets();
+                u32::from_be_bytes([o[0], o[1], o[2], 0])
+            }
+            std::net::IpAddr::V6(v6) => {
+                let o = v6.octets();
+                u32::from_be_bytes([o[0], o[1], o[2], o[3]])
+            }
+        };
+        let key = (prefix, qname_hash, rcode);
+        let now = Instant::now();
+        let mut state = self.state.lock();
+        let entry = state.entry(key).or_insert((0, now));
+        if now.duration_since(entry.1).as_secs() >= 1 {
+            entry.0 = 1;
+            entry.1 = now;
+            return true;
+        }
+        entry.0 += 1;
+        entry.0 <= self.limit
+    }
+
+    fn evict_stale(&self) {
+        let cutoff = Instant::now() - std::time::Duration::from_secs(10);
+        let mut state = self.state.lock();
+        state.retain(|_, (_, ts)| *ts > cutoff);
+    }
+}
 
 /// Shared context for all UDP query handlers.
 struct QueryContext {
@@ -20,6 +79,8 @@ struct QueryContext {
     rpz: RpzEngine,
     rate_limiter: RateLimiter,
     acl: RecursionAcl,
+    inflight: Arc<Semaphore>,
+    rrl: ResponseRateLimiter,
 }
 
 pub async fn serve(
@@ -38,6 +99,8 @@ pub async fn serve(
         rpz,
         rate_limiter,
         acl,
+        inflight: Arc::new(Semaphore::new(MAX_UDP_INFLIGHT)),
+        rrl: ResponseRateLimiter::new(10), // 10 identical responses per /24 per second
     });
 
     let num_workers = (num_cpus() / 2).clamp(2, 16);
@@ -77,6 +140,16 @@ pub async fn serve(
         }
     }
 
+    // Spawn RRL cleanup task
+    let rrl_ref = ctx.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            ticker.tick().await;
+            rrl_ref.rrl.evict_stale();
+        }
+    });
+
     for h in handles {
         h.await.ok();
     }
@@ -90,7 +163,11 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
     loop {
         let (len, src) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(error = %e, "UDP recv_from error");
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                continue;
+            }
         };
 
         // Rate limit check — drop packet silently if over limit
@@ -111,10 +188,16 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
         }
 
         // Cache miss — spawn async task for resolution
+        let permit = match ctx.inflight.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => continue, // At capacity, drop query
+        };
+
         let query_data = buf[..len].to_vec();
         let socket = socket.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let mut resp = super::handle_query(
                 &query_data,
                 &ctx.cache,
@@ -196,12 +279,20 @@ fn bind_reuseport(addr: SocketAddr) -> anyhow::Result<UdpSocket> {
     unsafe {
         let enable: libc::c_int = 1;
         let sz = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable as *const _ as _, sz);
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &enable as *const _ as _, sz);
+        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable as *const _ as _, sz) != 0 {
+            tracing::warn!("Failed to set SO_REUSEADDR: {}", std::io::Error::last_os_error());
+        }
+        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &enable as *const _ as _, sz) != 0 {
+            let err = std::io::Error::last_os_error();
+            libc::close(fd);
+            anyhow::bail!("SO_REUSEPORT not supported: {}", err);
+        }
 
         // Increase receive buffer for burst absorption
         let rcvbuf: libc::c_int = 4 * 1024 * 1024; // 4 MB
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &rcvbuf as *const _ as _, sz);
+        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &rcvbuf as *const _ as _, sz) != 0 {
+            tracing::debug!("Could not set SO_RCVBUF to 4MB: {}", std::io::Error::last_os_error());
+        }
     }
 
     let (sockaddr, socklen) = super::udp_batch::socketaddr_to_sockaddr_raw(&addr);

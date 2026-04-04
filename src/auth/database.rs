@@ -109,7 +109,7 @@ mod inner {
 
             for record in &records {
                 match parse_record_row(record) {
-                    Ok(rr) => zone.add_record(rr),
+                    Ok(rr) => { let _ = zone.add_record(rr); }
                     Err(e) => {
                         tracing::warn!(
                             zone = %zone_row.name,

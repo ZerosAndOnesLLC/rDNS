@@ -207,7 +207,7 @@ mod tests {
             ttl,
             rdata: RData::A(ip),
         };
-        CacheEntry::new(vec![rr], vec![], vec![], ttl, false)
+        CacheEntry::new(vec![rr], vec![], vec![], ttl, false, crate::protocol::rcode::Rcode::NoError)
     }
 
     #[test]

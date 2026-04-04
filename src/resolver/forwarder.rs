@@ -8,17 +8,23 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, oneshot};
 
+/// Number of sockets in the forwarder pool for source port diversity.
+const POOL_SOCKETS: usize = 4;
+
 /// A pool of UDP sockets for forwarding queries to upstream resolvers.
-/// Reuses sockets and multiplexes queries by ID.
+/// Uses multiple sockets for source port diversity and multiplexes queries by ID.
 #[derive(Clone)]
 pub struct ForwarderPool {
     inner: Arc<ForwarderPoolInner>,
 }
 
 struct ForwarderPoolInner {
-    socket: UdpSocket,
+    sockets: Vec<UdpSocket>,
     /// Pending queries waiting for responses, keyed by query ID
-    pending: Mutex<HashMap<u16, oneshot::Sender<Message>>>,
+    /// Stores (expected_name, expected_type, sender) for QNAME/QTYPE validation
+    pending: Mutex<HashMap<u16, (DnsName, RecordType, oneshot::Sender<Message>)>>,
+    /// Round-robin index for socket selection
+    next_socket: std::sync::atomic::AtomicUsize,
 }
 
 impl ForwarderPool {
@@ -29,21 +35,29 @@ impl ForwarderPool {
         } else {
             "[::]:0"
         };
-        let socket = UdpSocket::bind(bind_addr).await?;
-        socket.connect(server).await?;
+
+        let mut sockets = Vec::with_capacity(POOL_SOCKETS);
+        for _ in 0..POOL_SOCKETS {
+            let s = UdpSocket::bind(bind_addr).await?;
+            s.connect(server).await?;
+            sockets.push(s);
+        }
 
         let pool = Self {
             inner: Arc::new(ForwarderPoolInner {
-                socket,
+                sockets,
                 pending: Mutex::new(HashMap::new()),
+                next_socket: std::sync::atomic::AtomicUsize::new(0),
             }),
         };
 
-        // Spawn the response receiver loop
-        let pool_clone = pool.clone();
-        tokio::spawn(async move {
-            pool_clone.recv_loop().await;
-        });
+        // Spawn a response receiver loop for each socket
+        for i in 0..POOL_SOCKETS {
+            let pool_clone = pool.clone();
+            tokio::spawn(async move {
+                pool_clone.recv_loop(i).await;
+            });
+        }
 
         Ok(pool)
     }
@@ -105,11 +119,13 @@ impl ForwarderPool {
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.inner.pending.lock().await;
-            pending.insert(id, tx);
+            pending.insert(id, (name.clone(), rtype, tx));
         }
 
-        // Send the query
-        if let Err(e) = self.inner.socket.send(&wire).await {
+        // Send the query via round-robin socket selection
+        let idx = self.inner.next_socket.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.inner.sockets.len();
+        if let Err(e) = self.inner.sockets[idx].send(&wire).await {
             let mut pending = self.inner.pending.lock().await;
             pending.remove(&id);
             return Err(e.into());
@@ -130,10 +146,10 @@ impl ForwarderPool {
     }
 
     /// Background loop that receives responses and dispatches to waiting queries.
-    async fn recv_loop(&self) {
+    async fn recv_loop(&self, socket_idx: usize) {
         let mut buf = vec![0u8; 4096];
         loop {
-            let len = match self.inner.socket.recv(&mut buf).await {
+            let len = match self.inner.sockets[socket_idx].recv(&mut buf).await {
                 Ok(len) => len,
                 Err(e) => {
                     tracing::debug!(error = %e, "Forwarder recv error");
@@ -154,10 +170,18 @@ impl ForwarderPool {
                 pending.remove(&id)
             };
 
-            if let Some(tx) = sender {
+            if let Some((expected_name, expected_type, tx)) = sender {
                 match Message::decode(&buf[..len]) {
                     Ok(response) => {
-                        let _ = tx.send(response);
+                        // Validate QNAME/QTYPE match to prevent cache poisoning
+                        let valid = response.questions.first().map_or(false, |q| {
+                            q.name == expected_name && q.qtype == expected_type
+                        });
+                        if valid {
+                            let _ = tx.send(response);
+                        } else {
+                            tracing::debug!("Forwarder response QNAME/QTYPE mismatch, dropping");
+                        }
                     }
                     Err(e) => {
                         tracing::debug!(error = %e, "Failed to decode forwarder response");

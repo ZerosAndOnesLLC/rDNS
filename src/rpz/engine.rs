@@ -1,4 +1,4 @@
-use super::policy::{PolicyAction, RpzRule, RpzTrigger, action_from_rdata};
+use super::policy::{PolicyAction, RpzTrigger, action_from_rdata};
 use crate::protocol::header::Header;
 use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
@@ -6,8 +6,10 @@ use crate::protocol::opcode::Opcode;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::rdata::RData;
 use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// RPZ engine that checks queries against loaded policy zones.
 #[derive(Clone)]
@@ -16,7 +18,10 @@ pub struct RpzEngine {
 }
 
 struct RpzState {
-    rules: Vec<RpzRule>,
+    /// Exact QName matches for O(1) lookup
+    exact_rules: HashMap<DnsName, PolicyAction>,
+    /// Wildcard rules stored as (base domain -> action) for suffix matching
+    wildcard_rules: Vec<(DnsName, PolicyAction)>,
     zone_count: usize,
 }
 
@@ -24,7 +29,8 @@ impl RpzEngine {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(RpzState {
-                rules: Vec::new(),
+                exact_rules: HashMap::new(),
+                wildcard_rules: Vec::new(),
                 zone_count: 0,
             })),
         }
@@ -48,7 +54,8 @@ impl RpzEngine {
     pub fn load_zone_str(&self, content: &str, zone_name: &DnsName) -> anyhow::Result<usize> {
         let _origin = zone_name.clone();
         let zone_suffix = format!(".{}", zone_name.to_dotted().trim_end_matches('.'));
-        let mut new_rules = Vec::new();
+        let mut new_exact: Vec<(DnsName, PolicyAction)> = Vec::new();
+        let mut new_wildcards: Vec<(DnsName, PolicyAction)> = Vec::new();
 
         for line in content.lines() {
             let line = line.split(';').next().unwrap_or("").trim();
@@ -138,12 +145,22 @@ impl RpzEngine {
                 _ => continue,
             };
 
-            new_rules.push(RpzRule { trigger, action });
+            match trigger {
+                RpzTrigger::QName(name) => {
+                    new_exact.push((name, action));
+                }
+                RpzTrigger::QNameWildcard(name) => {
+                    new_wildcards.push((name, action));
+                }
+            }
         }
 
-        let count = new_rules.len();
-        let mut state = self.inner.write().unwrap();
-        state.rules.extend(new_rules);
+        let count = new_exact.len() + new_wildcards.len();
+        let mut state = self.inner.write();
+        for (name, action) in new_exact {
+            state.exact_rules.insert(name, action);
+        }
+        state.wildcard_rules.extend(new_wildcards);
         state.zone_count += 1;
 
         Ok(count)
@@ -152,18 +169,17 @@ impl RpzEngine {
     /// Check a query name against all RPZ rules.
     /// Returns the first matching policy action, or None if no rules match.
     pub fn check(&self, qname: &DnsName) -> Option<PolicyAction> {
-        let state = self.inner.read().unwrap();
+        let state = self.inner.read();
 
-        // Check exact matches first (higher priority), then wildcards
-        for rule in &state.rules {
-            if matches!(rule.trigger, RpzTrigger::QName(_)) && rule.matches(qname) {
-                return Some(rule.action.clone());
-            }
+        // O(1) exact match check
+        if let Some(action) = state.exact_rules.get(qname) {
+            return Some(action.clone());
         }
 
-        for rule in &state.rules {
-            if matches!(rule.trigger, RpzTrigger::QNameWildcard(_)) && rule.matches(qname) {
-                return Some(rule.action.clone());
+        // Wildcard check (still linear but typically far fewer rules)
+        for (base, action) in &state.wildcard_rules {
+            if qname.is_subdomain_of(base) && qname != base {
+                return Some(action.clone());
             }
         }
 
@@ -330,13 +346,15 @@ impl RpzEngine {
 
     /// Number of loaded rules.
     pub fn rule_count(&self) -> usize {
-        self.inner.read().unwrap().rules.len()
+        let state = self.inner.read();
+        state.exact_rules.len() + state.wildcard_rules.len()
     }
 
     /// Clear all rules.
     pub fn clear(&self) {
-        let mut state = self.inner.write().unwrap();
-        state.rules.clear();
+        let mut state = self.inner.write();
+        state.exact_rules.clear();
+        state.wildcard_rules.clear();
         state.zone_count = 0;
     }
 }

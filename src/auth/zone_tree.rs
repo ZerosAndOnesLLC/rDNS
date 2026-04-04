@@ -33,7 +33,10 @@ impl ZoneTree {
 
         // Try progressively shorter suffixes
         for i in 0..labels.len() {
-            let candidate = DnsName::from_labels(&labels[i..]);
+            let candidate = match DnsName::from_labels(&labels[i..]) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
             if let Some(zone) = self.zones.get(&candidate) {
                 return Some(zone);
             }

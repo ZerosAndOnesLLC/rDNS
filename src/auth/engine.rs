@@ -74,20 +74,27 @@ impl AuthEngine {
         }
 
         // Check for wildcard match
-        if let Some((wildcard_rrset, _wildcard_name)) = zone.find_wildcard(name) {
-            // Synthesize records with the queried name
-            let synthesized: Vec<ResourceRecord> = wildcard_rrset
-                .records
-                .iter()
-                .map(|rr| ResourceRecord {
-                    name: name.clone(),
-                    rtype: rr.rtype,
-                    rclass: rr.rclass,
-                    ttl: rr.ttl,
-                    rdata: rr.rdata.clone(),
-                })
-                .collect();
-            return AuthResult::Answer(self.build_answer(name, rtype, rclass, synthesized, &zone));
+        if let Some((wildcard_rrset, _wildcard_name)) = zone.find_wildcard(name, rtype) {
+            if wildcard_rrset.rtype == rtype || rtype == RecordType::CNAME {
+                // Synthesize records with the queried name
+                let synthesized: Vec<ResourceRecord> = wildcard_rrset
+                    .records
+                    .iter()
+                    .map(|rr| ResourceRecord {
+                        name: name.clone(),
+                        rtype: rr.rtype,
+                        rclass: rr.rclass,
+                        ttl: rr.ttl,
+                        rdata: rr.rdata.clone(),
+                    })
+                    .collect();
+                return AuthResult::Answer(
+                    self.build_answer(name, rtype, rclass, synthesized, &zone),
+                );
+            } else {
+                // Wildcard exists but not for this type -- NODATA
+                return AuthResult::Answer(self.build_nodata(name, rtype, rclass, &zone));
+            }
         }
 
         // NXDOMAIN — name does not exist

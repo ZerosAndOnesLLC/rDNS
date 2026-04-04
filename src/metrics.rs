@@ -1,23 +1,43 @@
 use crate::cache::CacheStore;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+
+const MAX_METRICS_CONNECTIONS: usize = 16;
+const METRICS_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Serve Prometheus metrics over HTTP.
 pub async fn serve(addr: SocketAddr, cache: CacheStore) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
+    let semaphore = Arc::new(Semaphore::new(MAX_METRICS_CONNECTIONS));
     tracing::info!(%addr, "Prometheus metrics endpoint started");
 
     loop {
         let (mut stream, _) = listener.accept().await?;
         let cache = cache.clone();
 
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                drop(stream);
+                continue;
+            }
+        };
+
         tokio::spawn(async move {
+            let _permit = permit;
             // Read the HTTP request line to validate the path
             let mut buf = vec![0u8; 4096];
-            let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
-                Ok(n) => n,
-                Err(_) => return,
+            let n = match tokio::time::timeout(
+                METRICS_READ_TIMEOUT,
+                tokio::io::AsyncReadExt::read(&mut stream, &mut buf),
+            )
+            .await
+            {
+                Ok(Ok(n)) => n,
+                Ok(Err(_)) | Err(_) => return,
             };
 
             // Parse the request line (e.g., "GET /metrics HTTP/1.1\r\n...")

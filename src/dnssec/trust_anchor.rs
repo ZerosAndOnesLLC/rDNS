@@ -37,6 +37,33 @@ impl TrustAnchor {
         if !key.is_ksk() {
             return false;
         }
+        // Verify the public key has reasonable length for the algorithm
+        // RSA-2048 keys are ~256 bytes, RSA-4096 are ~512 bytes
+        match key.algorithm {
+            Algorithm::RsaSha256 | Algorithm::RsaSha512 => {
+                if key.public_key.len() < 128 || key.public_key.len() > 1024 {
+                    return false;
+                }
+            }
+            Algorithm::EcdsaP256Sha256 => {
+                if key.public_key.len() != 64 {
+                    return false;
+                }
+            }
+            Algorithm::EcdsaP384Sha384 => {
+                if key.public_key.len() != 96 {
+                    return false;
+                }
+            }
+            Algorithm::Ed25519 => {
+                if key.public_key.len() != 32 {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        // NOTE: Full digest verification requires SHA-256 computation.
+        // This will be implemented when cryptographic DNSSEC validation is added.
         true
     }
 }

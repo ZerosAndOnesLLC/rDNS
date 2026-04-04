@@ -4,6 +4,21 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Canonicalize IPv4-mapped IPv6 addresses to their IPv4 equivalent.
+pub fn canonicalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            // Check for IPv4-mapped IPv6 (::ffff:x.x.x.x)
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                IpAddr::V4(v4)
+            } else {
+                ip
+            }
+        }
+        _ => ip,
+    }
+}
+
 /// Per-source-IP rate limiter using a token bucket algorithm.
 /// Each IP gets `limit` tokens per second, with a burst capacity of `limit`.
 #[derive(Clone)]
@@ -41,12 +56,21 @@ impl RateLimiter {
     /// Returns `true` if allowed, `false` if rate-limited.
     #[inline]
     pub fn check(&self, ip: IpAddr) -> bool {
+        let ip = canonicalize_ip(ip);
+
         if self.inner.limit == 0 {
             return true;
         }
 
         let shard_idx = shard_for_ip(&ip);
         let mut shard = self.inner.shards[shard_idx].lock();
+
+        // Prevent memory exhaustion: cap entries per shard
+        const MAX_ENTRIES_PER_SHARD: usize = 10_000;
+        if shard.len() >= MAX_ENTRIES_PER_SHARD && !shard.contains_key(&ip) {
+            // Shard is full and this is a new IP — reject to prevent memory exhaustion
+            return false;
+        }
 
         let now = Instant::now();
         let limit = self.inner.limit as f64;
@@ -97,12 +121,28 @@ impl RateLimiter {
 }
 
 fn shard_for_ip(ip: &IpAddr) -> usize {
-    // Simple hash: use last bytes of IP for shard selection
-    let byte = match ip {
-        IpAddr::V4(v4) => v4.octets()[3],
-        IpAddr::V6(v6) => v6.octets()[15],
+    let hash = match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // FNV-1a-inspired hash
+            let mut h: u32 = 2166136261;
+            for &b in &o {
+                h ^= b as u32;
+                h = h.wrapping_mul(16777619);
+            }
+            h
+        }
+        IpAddr::V6(v6) => {
+            let o = v6.octets();
+            let mut h: u32 = 2166136261;
+            for &b in &o {
+                h ^= b as u32;
+                h = h.wrapping_mul(16777619);
+            }
+            h
+        }
     };
-    byte as usize & (NUM_SHARDS - 1)
+    hash as usize & (NUM_SHARDS - 1)
 }
 
 #[cfg(test)]

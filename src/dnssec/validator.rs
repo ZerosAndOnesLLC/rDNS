@@ -1,7 +1,5 @@
-use super::algorithms::{DnskeyData, RrsigData};
 use super::trust_anchor::ValidationStatus;
 use crate::protocol::message::Message;
-use crate::protocol::rdata::RData;
 use crate::protocol::record::RecordType;
 
 /// DNSSEC response validator.
@@ -34,92 +32,9 @@ impl DnssecValidator {
             return ValidationStatus::Insecure;
         }
 
-        // Extract RRSIG records from the answer
-        let rrsigs: Vec<RrsigData> = response
-            .answers
-            .iter()
-            .filter(|rr| rr.rtype == RecordType::RRSIG)
-            .filter_map(|rr| {
-                if let RData::Raw { data, .. } = &rr.rdata {
-                    RrsigData::from_rdata(data)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if rrsigs.is_empty() {
-            return ValidationStatus::Insecure;
-        }
-
-        // Check signature time validity
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-
-        for rrsig in &rrsigs {
-            if !rrsig.is_time_valid(now) {
-                tracing::warn!(
-                    key_tag = rrsig.key_tag,
-                    expiration = rrsig.sig_expiration,
-                    inception = rrsig.sig_inception,
-                    "RRSIG time validation failed"
-                );
-                return ValidationStatus::Bogus;
-            }
-        }
-
-        // Extract DNSKEY records if present (in additional or answer for DNSKEY queries)
-        let dnskeys: Vec<DnskeyData> = response
-            .answers
-            .iter()
-            .chain(response.additional.iter())
-            .filter(|rr| rr.rtype == RecordType::DNSKEY)
-            .filter_map(|rr| {
-                if let RData::Raw { data, .. } = &rr.rdata {
-                    DnskeyData::from_rdata(data)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Verify key tags match between RRSIG and available DNSKEYs
-        for rrsig in &rrsigs {
-            let matching_key = dnskeys.iter().find(|k| k.key_tag() == rrsig.key_tag);
-
-            if matching_key.is_none() {
-                // Key not available in response — would need to be fetched
-                // For now, mark as indeterminate
-                tracing::debug!(
-                    key_tag = rrsig.key_tag,
-                    "DNSKEY not found for RRSIG"
-                );
-                return ValidationStatus::Indeterminate;
-            }
-
-            let key = matching_key.unwrap();
-
-            // Verify algorithm is supported
-            if !key.algorithm.is_supported() || !rrsig.algorithm.is_supported() {
-                tracing::warn!(
-                    algorithm = ?rrsig.algorithm,
-                    "Unsupported DNSSEC algorithm"
-                );
-                return ValidationStatus::Indeterminate;
-            }
-
-            // TODO: Implement actual cryptographic signature verification
-            // This requires the `ring` crate and building the signed data
-            // (canonical RRset + RRSIG header) then verifying against the public key.
-            // For now, we check structural validity only.
-        }
-
-        // Cryptographic signature verification is not yet implemented.
-        // Without actual signature verification, we MUST NOT return Secure
-        // as that would set AD=1 and give clients false assurance.
-        // All structurally-valid-but-unverified responses are Indeterminate.
+        // DNSSEC cryptographic signature verification is not yet implemented.
+        // Return Indeterminate for all signed responses to avoid false security.
+        tracing::debug!("DNSSEC validation not implemented — treating signed response as Indeterminate");
         ValidationStatus::Indeterminate
     }
 
@@ -136,6 +51,7 @@ mod tests {
     use crate::protocol::name::DnsName;
     use crate::protocol::opcode::Opcode;
     use crate::protocol::rcode::Rcode;
+    use crate::protocol::rdata::RData;
     use crate::protocol::record::{RecordClass, ResourceRecord};
 
     fn empty_response() -> Message {

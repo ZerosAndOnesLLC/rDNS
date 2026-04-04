@@ -1,3 +1,4 @@
+use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
 use crate::protocol::name::DnsName;
 use std::time::Instant;
@@ -13,6 +14,8 @@ pub struct CacheEntry {
     pub additional: Vec<ResourceRecord>,
     /// Whether this is a negative cache entry (NXDOMAIN or NODATA)
     pub negative: bool,
+    /// Original rcode for negative entries (NxDomain vs NoError/NODATA)
+    pub negative_rcode: Rcode,
     /// Original TTL in seconds (as received)
     pub original_ttl: u32,
     /// When this entry was inserted
@@ -43,12 +46,14 @@ impl CacheEntry {
         additional: Vec<ResourceRecord>,
         ttl: u32,
         negative: bool,
+        negative_rcode: Rcode,
     ) -> Self {
         Self {
             answers,
             authority,
             additional,
             negative,
+            negative_rcode,
             original_ttl: ttl,
             inserted_at: Instant::now(),
             hit_count: 0,
@@ -131,7 +136,7 @@ mod tests {
     #[test]
     fn test_cache_entry_ttl() {
         let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
-        let entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false);
+        let entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
 
         assert!(!entry.is_expired());
         assert!(entry.remaining_ttl() <= 300);
@@ -141,7 +146,7 @@ mod tests {
     #[test]
     fn test_cache_entry_adjusted_ttl() {
         let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
-        let entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false);
+        let entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
 
         let adjusted = entry.answers_with_adjusted_ttl();
         assert_eq!(adjusted.len(), 1);

@@ -2,8 +2,9 @@ use super::zone::Zone;
 use super::zone_parser;
 use super::zone_tree::ZoneTree;
 use crate::protocol::name::DnsName;
+use parking_lot::RwLock;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// Manages all loaded zones. Thread-safe via RwLock for read-heavy workloads.
 #[derive(Clone)]
@@ -72,13 +73,13 @@ impl ZoneCatalog {
 
     /// Insert or replace a zone.
     pub fn insert(&self, zone: Zone) {
-        let mut tree = self.inner.write().unwrap();
+        let mut tree = self.inner.write();
         tree.insert(zone);
     }
 
     /// Remove a zone by origin.
     pub fn remove(&self, origin: &DnsName) -> Option<Zone> {
-        let mut tree = self.inner.write().unwrap();
+        let mut tree = self.inner.write();
         tree.remove(origin)
     }
 
@@ -96,19 +97,19 @@ impl ZoneCatalog {
 
     /// Find the zone that is authoritative for a given name.
     pub fn find_zone(&self, name: &DnsName) -> Option<Zone> {
-        let tree = self.inner.read().unwrap();
+        let tree = self.inner.read();
         tree.find_zone(name).cloned()
     }
 
     /// List all zone origins.
     pub fn zone_names(&self) -> Vec<DnsName> {
-        let tree = self.inner.read().unwrap();
+        let tree = self.inner.read();
         tree.zone_names().into_iter().cloned().collect()
     }
 
     /// Number of loaded zones.
     pub fn zone_count(&self) -> usize {
-        let tree = self.inner.read().unwrap();
+        let tree = self.inner.read();
         tree.len()
     }
 }

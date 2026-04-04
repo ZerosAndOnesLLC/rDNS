@@ -36,13 +36,32 @@ pub fn drop_privileges(user: &str, group: &str) -> anyhow::Result<()> {
     }
 
     // Set GID first (must be done before dropping UID)
-    if unsafe { libc::setgid(gid) } != 0 {
-        anyhow::bail!("Failed to setgid to {}", group);
+    // Use setresgid to set real, effective, and saved GID
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::setresgid(gid, gid, gid) } != 0 {
+            anyhow::bail!("Failed to setresgid to {}", group);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if unsafe { libc::setgid(gid) } != 0 {
+            anyhow::bail!("Failed to setgid to {}", group);
+        }
     }
 
     // Set UID
-    if unsafe { libc::setuid(uid) } != 0 {
-        anyhow::bail!("Failed to setuid to {}", user);
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::setresuid(uid, uid, uid) } != 0 {
+            anyhow::bail!("Failed to setresuid to {}", user);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if unsafe { libc::setuid(uid) } != 0 {
+            anyhow::bail!("Failed to setuid to {}", user);
+        }
     }
 
     // Verify we can't regain root

@@ -270,7 +270,7 @@ impl Resolver {
         .await
     }
 
-    /// Cache a successful DNS response.
+    /// Cache a successful DNS response with bailiwick validation.
     fn cache_response(&self, key: &CacheKey, response: &Message) {
         let ttl = response
             .answers
@@ -291,13 +291,44 @@ impl Resolver {
         let negative = response.header.rcode == Rcode::NxDomain
             || (response.header.rcode == Rcode::NoError && response.answers.is_empty());
 
-        let entry = CacheEntry::new(
-            response.answers.clone(),
-            response.authority.clone(),
-            response.additional.clone(),
-            ttl,
-            negative,
-        );
+        let negative_rcode = if response.header.rcode == Rcode::NxDomain {
+            Rcode::NxDomain
+        } else {
+            Rcode::NoError // NODATA or positive
+        };
+
+        // Bailiwick validation: only cache records that are in-bailiwick
+        // for the queried name's zone
+        let query_name = &key.name;
+        let answers: Vec<_> = response
+            .answers
+            .iter()
+            .filter(|rr| is_in_bailiwick(&rr.name, query_name))
+            .cloned()
+            .collect();
+        let authority: Vec<_> = response
+            .authority
+            .iter()
+            .filter(|rr| is_in_bailiwick_authority(&rr.name, query_name))
+            .cloned()
+            .collect();
+        let additional: Vec<_> = response
+            .additional
+            .iter()
+            .filter(|rr| {
+                // Additional records should be glue for NS names in the authority section
+                authority.iter().any(|auth| {
+                    if let crate::protocol::rdata::RData::NS(ns_name) = &auth.rdata {
+                        rr.name == *ns_name
+                    } else {
+                        false
+                    }
+                }) || is_in_bailiwick(&rr.name, query_name)
+            })
+            .cloned()
+            .collect();
+
+        let entry = CacheEntry::new(answers, authority, additional, ttl, negative, negative_rcode);
 
         self.inner.cache.insert(key.clone(), entry);
     }
@@ -325,7 +356,7 @@ impl Resolver {
                 ad: false,
                 cd: false,
                 rcode: if entry.negative {
-                    Rcode::NxDomain
+                    entry.negative_rcode
                 } else {
                     Rcode::NoError
                 },
@@ -382,6 +413,19 @@ impl Resolver {
             additional: vec![],
         }
     }
+}
+
+/// Check if a record name is in-bailiwick for the query.
+/// A record is in-bailiwick if it's the query name itself, or a parent/ancestor of it.
+fn is_in_bailiwick(record_name: &DnsName, query_name: &DnsName) -> bool {
+    // Answer records should match the query name (or be in a CNAME chain)
+    record_name == query_name || query_name.is_subdomain_of(record_name)
+}
+
+/// Check if an authority record name is in-bailiwick.
+/// Authority records should be for a parent zone of the query name.
+fn is_in_bailiwick_authority(record_name: &DnsName, query_name: &DnsName) -> bool {
+    query_name.is_subdomain_of(record_name) || record_name == query_name
 }
 
 #[cfg(test)]

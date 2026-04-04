@@ -1,5 +1,19 @@
 use std::net::IpAddr;
 
+/// Canonicalize IPv4-mapped IPv6 addresses to their IPv4 equivalent.
+fn canonicalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                IpAddr::V4(v4)
+            } else {
+                ip
+            }
+        }
+        _ => ip,
+    }
+}
+
 /// A CIDR network prefix for access control.
 #[derive(Debug, Clone)]
 struct CidrEntry {
@@ -9,6 +23,7 @@ struct CidrEntry {
 
 impl CidrEntry {
     fn contains(&self, ip: IpAddr) -> bool {
+        let ip = canonicalize_ip(ip);
         match (self.addr, ip) {
             (IpAddr::V4(net), IpAddr::V4(addr)) => {
                 if self.prefix_len == 0 {
@@ -64,6 +79,12 @@ impl RecursionAcl {
                     });
                 };
                 let addr: IpAddr = addr_str.parse().ok()?;
+                // Validate prefix length for address family
+                let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
+                if prefix_len > max_prefix {
+                    tracing::warn!(cidr = %s, "Invalid prefix length {} for {} address (max {})", prefix_len, if addr.is_ipv4() { "IPv4" } else { "IPv6" }, max_prefix);
+                    return None;
+                }
                 Some(CidrEntry { addr, prefix_len })
             })
             .collect();
@@ -77,6 +98,7 @@ impl RecursionAcl {
         if self.entries.is_empty() {
             return true;
         }
+        let ip = canonicalize_ip(ip);
         self.entries.iter().any(|e| e.contains(ip))
     }
 

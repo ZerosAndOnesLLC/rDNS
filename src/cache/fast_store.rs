@@ -114,19 +114,22 @@ impl FastCacheStore {
                 }
             }
             if shard.len() >= max_per_shard {
-                // Still over capacity — evict ~10% of oldest entries
+                // Still over capacity — evict ~10% of oldest entries by insertion time
                 let to_evict = max_per_shard / 10 + 1;
-                let keys_to_evict: Vec<CacheKey> = shard
+                let mut entries: Vec<(CacheKey, std::time::Instant)> = shard
                     .iter()
-                    .take(to_evict)
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, v)| (k.clone(), v.inserted_at))
                     .collect();
-                for k in &keys_to_evict {
-                    shard.remove(k);
+                entries.sort_by_key(|(_, ts)| *ts); // oldest first
+                let mut evicted = 0;
+                for (k, _) in entries.into_iter().take(to_evict) {
+                    if shard.remove(&k).is_some() {
+                        evicted += 1;
+                    }
                 }
                 self.inner
                     .evictions
-                    .fetch_add(keys_to_evict.len() as u64, Ordering::Relaxed);
+                    .fetch_add(evicted as u64, Ordering::Relaxed);
             }
 
             shard.insert(key, entry);
@@ -215,7 +218,7 @@ mod tests {
             ttl,
             rdata: RData::A(ip),
         };
-        CacheEntry::new(vec![rr], vec![], vec![], ttl, false)
+        CacheEntry::new(vec![rr], vec![], vec![], ttl, false, crate::protocol::rcode::Rcode::NoError)
     }
 
     #[test]

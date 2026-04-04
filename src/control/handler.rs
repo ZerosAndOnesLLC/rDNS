@@ -24,17 +24,16 @@ impl ControlServer {
             std::fs::create_dir_all(parent).ok();
         }
 
+        // Set restrictive umask before binding to avoid TOCTOU race on socket permissions
+        #[cfg(unix)]
+        let old_umask = unsafe { libc::umask(0o117) }; // Creates socket with 0660
+
         let listener = UnixListener::bind(socket_path)?;
 
-        // Restrict socket permissions to owner and group only (0660)
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o660);
-            if let Err(e) = std::fs::set_permissions(socket_path, perms) {
-                tracing::warn!(error = %e, "Could not set control socket permissions");
-            }
-        }
+        unsafe {
+            libc::umask(old_umask);
+        } // Restore original umask
 
         tracing::info!(path = %socket_path.display(), "Control socket listening");
 
@@ -62,6 +61,10 @@ impl ControlServer {
             let n = reader.read_line(&mut line).await?;
             if n == 0 {
                 return Ok(()); // Client disconnected
+            }
+            if line.len() > 4096 {
+                writer.write_all(b"ERROR: command too long\n").await?;
+                return Ok(());
             }
 
             let response = self.handle_command(line.trim());

@@ -12,7 +12,7 @@ pub fn enter_sandbox() -> anyhow::Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        apply_seccomp()?;
+        apply_linux_hardening()?;
     }
 
     #[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
@@ -39,11 +39,10 @@ fn enter_capsicum() -> anyhow::Result<()> {
 }
 
 /// Linux security hardening.
-/// Sets PR_SET_NO_NEW_PRIVS to prevent privilege escalation via execve,
-/// setuid binaries, or other mechanisms. This is a prerequisite for
-/// seccomp-bpf and provides meaningful security on its own.
+/// Applies PR_SET_NO_NEW_PRIVS and PR_SET_DUMPABLE to prevent privilege
+/// escalation and ptrace/core dump information leaks.
 #[cfg(target_os = "linux")]
-fn apply_seccomp() -> anyhow::Result<()> {
+fn apply_linux_hardening() -> anyhow::Result<()> {
     // PR_SET_NO_NEW_PRIVS prevents the process (and children) from gaining
     // new privileges. This blocks execve of setuid/setgid binaries and is
     // a prerequisite for unprivileged seccomp filters.
@@ -52,7 +51,18 @@ fn apply_seccomp() -> anyhow::Result<()> {
         let err = std::io::Error::last_os_error();
         anyhow::bail!("Failed to set PR_SET_NO_NEW_PRIVS: {}", err);
     }
-    tracing::info!("Linux security: PR_SET_NO_NEW_PRIVS enabled");
+
+    // PR_SET_DUMPABLE=0 prevents ptrace attachment and core dumps,
+    // which could leak sensitive data (TLS keys, cached records).
+    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if ret != 0 {
+        tracing::warn!(
+            "Failed to set PR_SET_DUMPABLE=0: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    tracing::info!("Linux security: NO_NEW_PRIVS + non-dumpable enabled");
     Ok(())
 }
 

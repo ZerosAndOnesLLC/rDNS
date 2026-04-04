@@ -27,7 +27,7 @@ pub enum NameError {
 }
 
 /// Maximum pointer follows to prevent infinite loops
-const MAX_POINTERS: usize = 128;
+const MAX_POINTERS: usize = 16;
 
 impl DnsName {
     /// Create a root name (empty label list, represents ".").
@@ -35,11 +35,19 @@ impl DnsName {
         Self { labels: Vec::new() }
     }
 
-    /// Create a name from a slice of labels.
-    pub fn from_labels(labels: &[String]) -> Self {
-        Self {
-            labels: labels.iter().map(|l| l.to_ascii_lowercase()).collect(),
+    /// Create a name from a slice of labels with validation.
+    pub fn from_labels(labels: &[String]) -> Result<Self, NameError> {
+        let normalized: Vec<String> = labels.iter().map(|l| l.to_ascii_lowercase()).collect();
+        for label in &normalized {
+            if label.len() > 63 {
+                return Err(NameError::LabelTooLong(label.len()));
+            }
         }
+        let wire_len: usize = normalized.iter().map(|l| 1 + l.len()).sum::<usize>() + 1;
+        if wire_len > 255 {
+            return Err(NameError::NameTooLong(wire_len));
+        }
+        Ok(Self { labels: normalized })
     }
 
     /// Create a name from a dotted string (e.g., "www.example.com" or "www.example.com.").
@@ -74,6 +82,7 @@ impl DnsName {
         let mut pos = offset;
         let mut bytes_consumed = None; // Track where we first jumped
         let mut pointer_count = 0;
+        let mut wire_len: usize = 0; // Track total wire-format name length (C6)
 
         loop {
             if pos >= buf.len() {
@@ -84,6 +93,7 @@ impl DnsName {
 
             // Root label (end of name)
             if len_byte == 0 {
+                wire_len += 1; // root label byte
                 if bytes_consumed.is_none() {
                     bytes_consumed = Some(pos + 1 - offset);
                 }
@@ -96,6 +106,11 @@ impl DnsName {
                     return Err(NameError::UnexpectedEnd);
                 }
                 let ptr = ((len_byte as usize & 0x3F) << 8) | buf[pos + 1] as usize;
+
+                // Prevent forward and self-referencing pointers (RFC 1035 S4.1.4)
+                if ptr >= pos {
+                    return Err(NameError::PointerLoop);
+                }
 
                 if bytes_consumed.is_none() {
                     bytes_consumed = Some(pos + 2 - offset);
@@ -123,12 +138,18 @@ impl DnsName {
                 return Err(NameError::UnexpectedEnd);
             }
 
-            let label = std::str::from_utf8(&buf[label_start..label_end])
-                .map_err(|_| NameError::InvalidLabelType(len_byte))?
+            wire_len += 1 + label_len; // length byte + label data
+
+            let label = String::from_utf8_lossy(&buf[label_start..label_end])
                 .to_ascii_lowercase();
 
             labels.push(label);
             pos = label_end;
+        }
+
+        // Validate total wire-format name length (RFC 1035: max 255 bytes)
+        if wire_len > 255 {
+            return Err(NameError::NameTooLong(wire_len));
         }
 
         let consumed = bytes_consumed.unwrap_or(pos + 1 - offset);

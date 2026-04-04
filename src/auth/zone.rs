@@ -3,6 +3,9 @@ use crate::protocol::rdata::SoaData;
 use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
 use std::collections::HashMap;
 
+const MAX_RECORDS_PER_ZONE: usize = 1_000_000;
+const MAX_RECORDS_PER_RRSET: usize = 1_000;
+
 /// A DNS zone containing all records for a domain.
 #[derive(Debug, Clone)]
 pub struct Zone {
@@ -37,7 +40,15 @@ impl Zone {
     }
 
     /// Add a resource record to this zone.
-    pub fn add_record(&mut self, rr: ResourceRecord) {
+    /// Returns false if the zone or RRSet record limit has been reached.
+    pub fn add_record(&mut self, rr: ResourceRecord) -> bool {
+        // Enforce zone size limits
+        let total_records: usize = self.rrsets.values().map(|rs| rs.records.len()).sum();
+        if total_records >= MAX_RECORDS_PER_ZONE {
+            tracing::warn!(zone = %self.origin, "Zone record limit reached ({})", MAX_RECORDS_PER_ZONE);
+            return false;
+        }
+
         let key = (rr.name.clone(), rr.rtype);
         let rrset = self.rrsets.entry(key).or_insert_with(|| RRSet {
             name: rr.name.clone(),
@@ -46,7 +57,14 @@ impl Zone {
             ttl: rr.ttl,
             records: Vec::new(),
         });
+
+        if rrset.records.len() >= MAX_RECORDS_PER_RRSET {
+            tracing::warn!(name = %rr.name, rtype = %rr.rtype, "RRSet record limit reached ({})", MAX_RECORDS_PER_RRSET);
+            return false;
+        }
+
         rrset.records.push(rr);
+        true
     }
 
     /// Look up records by name and type.
@@ -92,7 +110,10 @@ impl Zone {
         // Skip the zone apex (that's not a delegation)
         for i in (origin_len + 1)..=name_labels.len() {
             let candidate_labels = &name_labels[name_labels.len() - i..];
-            let candidate = DnsName::from_labels(candidate_labels);
+            let candidate = match DnsName::from_labels(candidate_labels) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
             if candidate == self.origin {
                 continue;
             }
@@ -104,7 +125,8 @@ impl Zone {
     }
 
     /// Find wildcard match for a name (e.g., *.example.com matches foo.example.com).
-    pub fn find_wildcard(&self, name: &DnsName) -> Option<(&RRSet, DnsName)> {
+    /// Takes the requested record type to return the matching RRSet when available.
+    pub fn find_wildcard(&self, name: &DnsName, rtype: RecordType) -> Option<(&RRSet, DnsName)> {
         let name_labels = name.labels();
         let origin_len = self.origin.labels().len();
 
@@ -117,12 +139,20 @@ impl Zone {
         for i in 1..=(name_labels.len() - origin_len) {
             let mut wildcard_labels = vec!["*".to_string()];
             wildcard_labels.extend_from_slice(&name_labels[i..]);
-            let wildcard_name = DnsName::from_labels(&wildcard_labels);
+            let wildcard_name = match DnsName::from_labels(&wildcard_labels) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
 
             // Check if wildcard has records of any type
             let wildcard_rrsets: Vec<_> = self.lookup_any(&wildcard_name);
             if !wildcard_rrsets.is_empty() {
-                // Return the first RRSet found at the wildcard
+                // Look for the specific record type first
+                if let Some(rrset) = self.lookup(&wildcard_name, rtype) {
+                    return Some((rrset, wildcard_name));
+                }
+                // If the wildcard name exists but doesn't have the requested type,
+                // return the first RRSet (caller will generate NODATA)
                 return Some((wildcard_rrsets[0], wildcard_name));
             }
         }

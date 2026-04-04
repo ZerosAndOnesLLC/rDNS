@@ -116,7 +116,7 @@ pub fn parse_zone_str(content: &str, origin: &DnsName) -> Result<Zone, ParseErro
     let mut zone = Zone::new(origin.clone(), soa_data, soa_ttl);
 
     for rr in records {
-        zone.add_record(rr);
+        let _ = zone.add_record(rr);
     }
 
     Ok(zone)
@@ -400,20 +400,22 @@ fn parse_record_type(s: &str) -> Option<RecordType> {
 
 /// Parse a TTL value (supports bare seconds and BIND-style suffixes: 1h, 30m, etc.)
 fn parse_ttl(s: &str) -> Result<u32, String> {
-    // Try plain number first
+    const MAX_TTL: u32 = 604800; // 1 week
+
     if let Ok(n) = s.parse::<u32>() {
-        return Ok(n);
+        return Ok(n.min(MAX_TTL));
     }
 
-    // Parse BIND-style: 1h30m, 1d, 2w, etc.
     let mut total: u32 = 0;
     let mut current: u32 = 0;
 
     for ch in s.chars() {
         if ch.is_ascii_digit() {
-            current = current * 10 + ch.to_digit(10).unwrap();
+            current = current.checked_mul(10)
+                .and_then(|v| v.checked_add(ch.to_digit(10).unwrap()))
+                .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
         } else {
-            let multiplier = match ch.to_ascii_lowercase() {
+            let multiplier: u32 = match ch.to_ascii_lowercase() {
                 's' => 1,
                 'm' => 60,
                 'h' => 3600,
@@ -421,13 +423,17 @@ fn parse_ttl(s: &str) -> Result<u32, String> {
                 'w' => 604800,
                 _ => return Err(format!("invalid TTL suffix: {}", ch)),
             };
-            total += current * multiplier;
+            let product = current.checked_mul(multiplier)
+                .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
+            total = total.checked_add(product)
+                .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
             current = 0;
         }
     }
-    total += current; // Trailing number without suffix = seconds
+    total = total.checked_add(current)
+        .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
 
-    Ok(total)
+    Ok(total.min(MAX_TTL))
 }
 
 #[cfg(test)]
