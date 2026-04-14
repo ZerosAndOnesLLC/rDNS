@@ -10,19 +10,49 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-zone hit counter shared across all rules belonging to the zone.
+/// Cloning is cheap (Arc bump); fetch_add on the hot path is one relaxed atomic.
+type ZoneCounter = Arc<AtomicU64>;
+
+/// Snapshot of statistics for a single RPZ zone, returned by [`RpzEngine::zone_stats`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ZoneStat {
+    pub name: String,
+    pub rules: u64,
+    pub hits: u64,
+}
+
+/// Internal record of a loaded zone — preserved across reloads keyed by zone name.
+struct ZoneInfo {
+    name: String,
+    rules: u64,
+    counter: ZoneCounter,
+}
+
+/// Rule payload stored alongside each match key. Keeping the counter on the rule
+/// avoids a per-query map lookup — match → bump → return.
+#[derive(Clone)]
+struct RuleEntry {
+    action: PolicyAction,
+    counter: ZoneCounter,
+}
 
 /// RPZ engine that checks queries against loaded policy zones.
 #[derive(Clone)]
 pub struct RpzEngine {
     inner: Arc<RwLock<RpzState>>,
+    /// Persistent zone registry: name → counter Arc.
+    /// Lives outside `RpzState` so counters survive `clear()` / reload.
+    zones: Arc<RwLock<HashMap<String, ZoneInfo>>>,
 }
 
 struct RpzState {
-    /// Exact QName matches for O(1) lookup
-    exact_rules: HashMap<DnsName, PolicyAction>,
-    /// Wildcard rules stored as (base domain -> action) for suffix matching
-    wildcard_rules: Vec<(DnsName, PolicyAction)>,
-    zone_count: usize,
+    /// Exact QName matches for O(1) lookup.
+    exact_rules: HashMap<DnsName, RuleEntry>,
+    /// Wildcard rules stored as (base domain -> entry) for suffix matching.
+    wildcard_rules: Vec<(DnsName, RuleEntry)>,
 }
 
 impl RpzEngine {
@@ -31,8 +61,30 @@ impl RpzEngine {
             inner: Arc::new(RwLock::new(RpzState {
                 exact_rules: HashMap::new(),
                 wildcard_rules: Vec::new(),
-                zone_count: 0,
             })),
+            zones: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Look up (or create) the persistent counter for a zone name.
+    fn zone_counter(&self, zone_name: &str) -> ZoneCounter {
+        let mut zones = self.zones.write();
+        zones
+            .entry(zone_name.to_string())
+            .or_insert_with(|| ZoneInfo {
+                name: zone_name.to_string(),
+                rules: 0,
+                counter: Arc::new(AtomicU64::new(0)),
+            })
+            .counter
+            .clone()
+    }
+
+    /// Update the loaded rule count for a zone.
+    fn set_zone_rules(&self, zone_name: &str, rules: u64) {
+        let mut zones = self.zones.write();
+        if let Some(info) = zones.get_mut(zone_name) {
+            info.rules = rules;
         }
     }
 
@@ -52,10 +104,12 @@ impl RpzEngine {
 
     /// Load RPZ rules from a zone file string.
     pub fn load_zone_str(&self, content: &str, zone_name: &DnsName) -> anyhow::Result<usize> {
-        let _origin = zone_name.clone();
-        let zone_suffix = format!(".{}", zone_name.to_dotted().trim_end_matches('.'));
-        let mut new_exact: Vec<(DnsName, PolicyAction)> = Vec::new();
-        let mut new_wildcards: Vec<(DnsName, PolicyAction)> = Vec::new();
+        let zone_name_str = zone_name.to_dotted();
+        let zone_suffix = format!(".{}", zone_name_str.trim_end_matches('.'));
+        let counter = self.zone_counter(&zone_name_str);
+
+        let mut new_exact: Vec<(DnsName, RuleEntry)> = Vec::new();
+        let mut new_wildcards: Vec<(DnsName, RuleEntry)> = Vec::new();
 
         for line in content.lines() {
             let line = line.split(';').next().unwrap_or("").trim();
@@ -145,41 +199,44 @@ impl RpzEngine {
                 _ => continue,
             };
 
+            let entry = RuleEntry { action, counter: counter.clone() };
+
             match trigger {
-                RpzTrigger::QName(name) => {
-                    new_exact.push((name, action));
-                }
-                RpzTrigger::QNameWildcard(name) => {
-                    new_wildcards.push((name, action));
-                }
+                RpzTrigger::QName(name) => new_exact.push((name, entry)),
+                RpzTrigger::QNameWildcard(name) => new_wildcards.push((name, entry)),
             }
         }
 
         let count = new_exact.len() + new_wildcards.len();
-        let mut state = self.inner.write();
-        for (name, action) in new_exact {
-            state.exact_rules.insert(name, action);
+        {
+            let mut state = self.inner.write();
+            for (name, entry) in new_exact {
+                state.exact_rules.insert(name, entry);
+            }
+            state.wildcard_rules.extend(new_wildcards);
         }
-        state.wildcard_rules.extend(new_wildcards);
-        state.zone_count += 1;
+        self.set_zone_rules(&zone_name_str, count as u64);
 
         Ok(count)
     }
 
     /// Check a query name against all RPZ rules.
     /// Returns the first matching policy action, or None if no rules match.
+    /// On match, increments the owning zone's hit counter (one relaxed atomic).
     pub fn check(&self, qname: &DnsName) -> Option<PolicyAction> {
         let state = self.inner.read();
 
         // O(1) exact match check
-        if let Some(action) = state.exact_rules.get(qname) {
-            return Some(action.clone());
+        if let Some(entry) = state.exact_rules.get(qname) {
+            entry.counter.fetch_add(1, Ordering::Relaxed);
+            return Some(entry.action.clone());
         }
 
         // Wildcard check (still linear but typically far fewer rules)
-        for (base, action) in &state.wildcard_rules {
+        for (base, entry) in &state.wildcard_rules {
             if qname.is_subdomain_of(base) && qname != base {
-                return Some(action.clone());
+                entry.counter.fetch_add(1, Ordering::Relaxed);
+                return Some(entry.action.clone());
             }
         }
 
@@ -344,18 +401,60 @@ impl RpzEngine {
         }
     }
 
-    /// Number of loaded rules.
+    /// Number of loaded rules across all zones.
     pub fn rule_count(&self) -> usize {
         let state = self.inner.read();
         state.exact_rules.len() + state.wildcard_rules.len()
     }
 
-    /// Clear all rules.
+    /// Number of loaded zones.
+    pub fn zone_count(&self) -> usize {
+        self.zones.read().len()
+    }
+
+    /// Snapshot per-zone statistics. Cheap: one read lock + one Vec allocation.
+    pub fn zone_stats(&self) -> Vec<ZoneStat> {
+        let zones = self.zones.read();
+        let mut out: Vec<ZoneStat> = zones
+            .values()
+            .map(|z| ZoneStat {
+                name: z.name.clone(),
+                rules: z.rules,
+                hits: z.counter.load(Ordering::Relaxed),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Total RPZ matches across all zones since process start (or last reset).
+    pub fn total_hits(&self) -> u64 {
+        self.zones
+            .read()
+            .values()
+            .map(|z| z.counter.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// Clear all rules. Counters are preserved (zone registry stays intact).
+    /// Use [`reset_counters`] to also zero the per-zone hit counts.
     pub fn clear(&self) {
         let mut state = self.inner.write();
         state.exact_rules.clear();
         state.wildcard_rules.clear();
-        state.zone_count = 0;
+        // Mark all zones as having zero rules until they are reloaded.
+        let mut zones = self.zones.write();
+        for z in zones.values_mut() {
+            z.rules = 0;
+        }
+    }
+
+    /// Zero all per-zone hit counters without touching loaded rules.
+    pub fn reset_counters(&self) {
+        let zones = self.zones.read();
+        for z in zones.values() {
+            z.counter.store(0, Ordering::Relaxed);
+        }
     }
 }
 
@@ -444,5 +543,69 @@ safe.tracking.com CNAME rpz-passthru.
         assert_eq!(response.header.rcode, Rcode::NxDomain);
         assert_eq!(response.header.id, 0x1234);
         assert!(response.header.rd);
+    }
+
+    #[test]
+    fn test_per_zone_hit_counters() {
+        let engine = RpzEngine::new();
+        let ads = DnsName::from_str("ads.local").unwrap();
+        let mal = DnsName::from_str("mal.local").unwrap();
+
+        engine.load_zone_str("a.example.com CNAME .\n", &ads).unwrap();
+        engine.load_zone_str("b.example.com CNAME .\n*.tracker.com CNAME .\n", &mal).unwrap();
+
+        // Three matches against the malware zone, one against the ads zone.
+        engine.check(&DnsName::from_str("a.example.com").unwrap());
+        engine.check(&DnsName::from_str("b.example.com").unwrap());
+        engine.check(&DnsName::from_str("x.tracker.com").unwrap());
+        engine.check(&DnsName::from_str("y.tracker.com").unwrap());
+        engine.check(&DnsName::from_str("nope.example.com").unwrap()); // no match
+
+        let stats = engine.zone_stats();
+        assert_eq!(stats.len(), 2);
+        let ads_stat = stats.iter().find(|s| s.name == "ads.local.").unwrap();
+        let mal_stat = stats.iter().find(|s| s.name == "mal.local.").unwrap();
+        assert_eq!(ads_stat.hits, 1);
+        assert_eq!(ads_stat.rules, 1);
+        assert_eq!(mal_stat.hits, 3);
+        assert_eq!(mal_stat.rules, 2);
+        assert_eq!(engine.total_hits(), 4);
+    }
+
+    #[test]
+    fn test_counters_persist_across_clear() {
+        let engine = RpzEngine::new();
+        let zone = DnsName::from_str("test.zone").unwrap();
+        engine.load_zone_str("blocked.com CNAME .\n", &zone).unwrap();
+        engine.check(&DnsName::from_str("blocked.com").unwrap());
+        engine.check(&DnsName::from_str("blocked.com").unwrap());
+        assert_eq!(engine.total_hits(), 2);
+
+        engine.clear();
+        // After clear, rule count drops to 0 but zone registry + counter remain.
+        assert_eq!(engine.rule_count(), 0);
+        let stats = engine.zone_stats();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].rules, 0);
+        assert_eq!(stats[0].hits, 2);
+
+        // Reload: counter should keep accumulating, not reset.
+        engine.load_zone_str("blocked.com CNAME .\n", &zone).unwrap();
+        engine.check(&DnsName::from_str("blocked.com").unwrap());
+        assert_eq!(engine.total_hits(), 3);
+    }
+
+    #[test]
+    fn test_reset_counters() {
+        let engine = RpzEngine::new();
+        let zone = DnsName::from_str("z.local").unwrap();
+        engine.load_zone_str("x.com CNAME .\n", &zone).unwrap();
+        engine.check(&DnsName::from_str("x.com").unwrap());
+        assert_eq!(engine.total_hits(), 1);
+        engine.reset_counters();
+        assert_eq!(engine.total_hits(), 0);
+        // Rules still loaded.
+        assert!(engine.check(&DnsName::from_str("x.com").unwrap()).is_some());
+        assert_eq!(engine.total_hits(), 1);
     }
 }
