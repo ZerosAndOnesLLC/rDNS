@@ -43,23 +43,18 @@ fn enter_capsicum() -> anyhow::Result<()> {
 /// escalation and ptrace/core dump information leaks.
 #[cfg(target_os = "linux")]
 fn apply_linux_hardening() -> anyhow::Result<()> {
+    use nix::sys::prctl;
+
     // PR_SET_NO_NEW_PRIVS prevents the process (and children) from gaining
     // new privileges. This blocks execve of setuid/setgid binaries and is
     // a prerequisite for unprivileged seccomp filters.
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        anyhow::bail!("Failed to set PR_SET_NO_NEW_PRIVS: {}", err);
-    }
+    prctl::set_no_new_privs()
+        .map_err(|e| anyhow::anyhow!("Failed to set PR_SET_NO_NEW_PRIVS: {}", e))?;
 
     // PR_SET_DUMPABLE=0 prevents ptrace attachment and core dumps,
     // which could leak sensitive data (TLS keys, cached records).
-    let ret = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
-    if ret != 0 {
-        tracing::warn!(
-            "Failed to set PR_SET_DUMPABLE=0: {}",
-            std::io::Error::last_os_error()
-        );
+    if let Err(e) = prctl::set_dumpable(false) {
+        tracing::warn!("Failed to set PR_SET_DUMPABLE=0: {}", e);
     }
 
     tracing::info!("Linux security: NO_NEW_PRIVS + non-dumpable enabled");

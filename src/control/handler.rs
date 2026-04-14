@@ -26,14 +26,16 @@ impl ControlServer {
 
         // Set restrictive umask before binding to avoid TOCTOU race on socket permissions
         #[cfg(unix)]
-        let old_umask = unsafe { libc::umask(0o117) }; // Creates socket with 0660
+        let old_umask = nix::sys::stat::umask(
+            nix::sys::stat::Mode::from_bits_truncate(0o117),
+        ); // Creates socket with 0660
 
         let bind_result = UnixListener::bind(socket_path);
 
         // Always restore umask, even on bind failure
         #[cfg(unix)]
-        unsafe {
-            libc::umask(old_umask);
+        {
+            nix::sys::stat::umask(old_umask);
         }
 
         let listener = bind_result?;

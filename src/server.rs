@@ -209,7 +209,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     if let Err(e) = crate::security::privilege::drop_privileges(&cfg.server.user, &cfg.server.group)
     {
         #[cfg(unix)]
-        if unsafe { libc::getuid() } == 0 {
+        if nix::unistd::Uid::effective().is_root() {
             anyhow::bail!("Running as root but failed to drop privileges: {}", e);
         }
         tracing::warn!(error = %e, "Could not drop privileges (not running as root)");

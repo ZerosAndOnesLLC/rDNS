@@ -2,78 +2,65 @@
 /// Switches from root to the specified user/group.
 #[cfg(unix)]
 pub fn drop_privileges(user: &str, group: &str) -> anyhow::Result<()> {
+    use nix::unistd::{Group, Uid, User};
     use std::ffi::CString;
 
     // Only attempt if running as root
-    if unsafe { libc::getuid() } != 0 {
+    if !Uid::effective().is_root() {
         tracing::debug!("Not running as root, skipping privilege drop");
         return Ok(());
     }
 
-    let user_cstr = CString::new(user)
-        .map_err(|_| anyhow::anyhow!("Invalid user name"))?;
+    let user_cstr =
+        CString::new(user).map_err(|_| anyhow::anyhow!("Invalid user name"))?;
 
-    let group_cstr = CString::new(group)
-        .map_err(|_| anyhow::anyhow!("Invalid group name"))?;
+    // Look up group and user via NSS
+    let grp = Group::from_name(group)?
+        .ok_or_else(|| anyhow::anyhow!("Group '{}' not found", group))?;
+    let gid = grp.gid;
 
-    // Look up group
-    let grp = unsafe { libc::getgrnam(group_cstr.as_ptr()) };
-    if grp.is_null() {
-        anyhow::bail!("Group '{}' not found", group);
-    }
-    let gid = unsafe { (*grp).gr_gid };
-
-    // Look up user
-    let pwd = unsafe { libc::getpwnam(user_cstr.as_ptr()) };
-    if pwd.is_null() {
-        anyhow::bail!("User '{}' not found", user);
-    }
-    let uid = unsafe { (*pwd).pw_uid };
+    let pwd = User::from_name(user)?
+        .ok_or_else(|| anyhow::anyhow!("User '{}' not found", user))?;
+    let uid = pwd.uid;
 
     // Set supplementary groups
-    if unsafe { libc::initgroups(user_cstr.as_ptr(), gid) } != 0 {
-        anyhow::bail!("Failed to set supplementary groups");
-    }
+    nix::unistd::initgroups(&user_cstr, gid)
+        .map_err(|e| anyhow::anyhow!("Failed to set supplementary groups: {}", e))?;
 
     // Set GID first (must be done before dropping UID)
-    // Use setresgid to set real, effective, and saved GID
     #[cfg(target_os = "linux")]
     {
-        if unsafe { libc::setresgid(gid, gid, gid) } != 0 {
-            anyhow::bail!("Failed to setresgid to {}", group);
-        }
+        nix::unistd::setresgid(gid, gid, gid)
+            .map_err(|e| anyhow::anyhow!("Failed to setresgid to {}: {}", group, e))?;
     }
     #[cfg(not(target_os = "linux"))]
     {
-        if unsafe { libc::setgid(gid) } != 0 {
-            anyhow::bail!("Failed to setgid to {}", group);
-        }
+        nix::unistd::setgid(gid)
+            .map_err(|e| anyhow::anyhow!("Failed to setgid to {}: {}", group, e))?;
     }
 
     // Set UID
     #[cfg(target_os = "linux")]
     {
-        if unsafe { libc::setresuid(uid, uid, uid) } != 0 {
-            anyhow::bail!("Failed to setresuid to {}", user);
-        }
+        nix::unistd::setresuid(uid, uid, uid)
+            .map_err(|e| anyhow::anyhow!("Failed to setresuid to {}: {}", user, e))?;
     }
     #[cfg(not(target_os = "linux"))]
     {
-        if unsafe { libc::setuid(uid) } != 0 {
-            anyhow::bail!("Failed to setuid to {}", user);
-        }
+        nix::unistd::setuid(uid)
+            .map_err(|e| anyhow::anyhow!("Failed to setuid to {}: {}", user, e))?;
     }
 
     // Verify we can't regain root
-    if unsafe { libc::setuid(0) } == 0 {
+    if nix::unistd::setuid(Uid::from_raw(0)).is_ok() {
         anyhow::bail!("SECURITY: Able to regain root after privilege drop!");
     }
 
     tracing::info!(
         user = user,
-        uid = uid,
+        uid = uid.as_raw(),
         group = group,
-        gid = gid,
+        gid = gid.as_raw(),
         "Dropped privileges"
     );
 
