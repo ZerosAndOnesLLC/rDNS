@@ -183,29 +183,6 @@ pub fn sendmmsg_batch(_fd: i32, _packets: &[SendPacket]) -> io::Result<usize> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "sendmmsg not available"))
 }
 
-/// Convert a SocketAddr to raw libc sockaddr_storage (public for SO_REUSEPORT binding).
-pub fn socketaddr_to_sockaddr_raw(addr: &SocketAddr) -> (libc::sockaddr_storage, u32) {
-    unsafe {
-        let mut storage: libc::sockaddr_storage = std::mem::zeroed();
-        match addr {
-            SocketAddr::V4(a) => {
-                let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
-                s.sin_family = libc::AF_INET as _;
-                s.sin_port = a.port().to_be();
-                s.sin_addr.s_addr = u32::from(*a.ip()).to_be();
-                (storage, std::mem::size_of::<libc::sockaddr_in>() as u32)
-            }
-            SocketAddr::V6(a) => {
-                let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
-                s.sin6_family = libc::AF_INET6 as _;
-                s.sin6_port = a.port().to_be();
-                s.sin6_addr.s6_addr = a.ip().octets();
-                (storage, std::mem::size_of::<libc::sockaddr_in6>() as u32)
-            }
-        }
-    }
-}
-
 /// Create pre-allocated receive packet batch.
 pub fn alloc_recv_batch(count: usize) -> Vec<RecvPacket> {
     (0..count)

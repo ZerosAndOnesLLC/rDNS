@@ -1,6 +1,6 @@
 [package]
 name = "rdns"
-version = "1.9.3"
+version = "1.9.4"
 edition = "2024"
 license = "MIT"
 description = "A high-performance, security-focused DNS server written in Rust"
@@ -31,6 +31,7 @@ rustls-pemfile = "2"
 libc = "0.2"
 parking_lot = "0.12"
 nix = { version = "0.29", features = ["socket", "uio", "net", "user", "process", "fs"] }
+socket2 = { version = "0.5", features = ["all"] }
 getrandom = "0.2"
 
 [profile.release]

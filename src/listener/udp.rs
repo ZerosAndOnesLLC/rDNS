@@ -278,45 +278,34 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> O
     None
 }
 
-/// Bind a UDP socket with SO_REUSEPORT via raw libc.
+/// Bind a UDP socket with SO_REUSEPORT using the safe socket2 wrappers.
 fn bind_reuseport(addr: SocketAddr) -> anyhow::Result<UdpSocket> {
-    use std::os::fd::FromRawFd;
+    use socket2::{Domain, Protocol, Socket, Type};
 
-    let domain = if addr.is_ipv4() { libc::AF_INET } else { libc::AF_INET6 };
+    let domain = if addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|e| anyhow::anyhow!("socket(): {}", e))?;
 
-    let fd = unsafe { libc::socket(domain, libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0) };
-    if fd < 0 {
-        anyhow::bail!("socket(): {}", std::io::Error::last_os_error());
+    socket.set_nonblocking(true)
+        .map_err(|e| anyhow::anyhow!("set_nonblocking: {}", e))?;
+    // O_CLOEXEC is set by default on Linux by socket2 >= 0.5.
+
+    if let Err(e) = socket.set_reuse_address(true) {
+        tracing::warn!("Failed to set SO_REUSEADDR: {}", e);
     }
 
-    unsafe {
-        let enable: libc::c_int = 1;
-        let sz = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable as *const _ as _, sz) != 0 {
-            tracing::warn!("Failed to set SO_REUSEADDR: {}", std::io::Error::last_os_error());
-        }
-        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &enable as *const _ as _, sz) != 0 {
-            let err = std::io::Error::last_os_error();
-            libc::close(fd);
-            anyhow::bail!("SO_REUSEPORT not supported: {}", err);
-        }
+    socket.set_reuse_port(true)
+        .map_err(|e| anyhow::anyhow!("SO_REUSEPORT not supported: {}", e))?;
 
-        // Increase receive buffer for burst absorption
-        let rcvbuf: libc::c_int = 4 * 1024 * 1024; // 4 MB
-        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &rcvbuf as *const _ as _, sz) != 0 {
-            tracing::debug!("Could not set SO_RCVBUF to 4MB: {}", std::io::Error::last_os_error());
-        }
+    // Increase receive buffer for burst absorption
+    if let Err(e) = socket.set_recv_buffer_size(4 * 1024 * 1024) {
+        tracing::debug!("Could not set SO_RCVBUF to 4MB: {}", e);
     }
 
-    let (sockaddr, socklen) = super::udp_batch::socketaddr_to_sockaddr_raw(&addr);
-    let ret = unsafe { libc::bind(fd, &sockaddr as *const _ as *const libc::sockaddr, socklen) };
-    if ret < 0 {
-        let err = std::io::Error::last_os_error();
-        unsafe { libc::close(fd) };
-        anyhow::bail!("bind(): {}", err);
-    }
+    socket.bind(&addr.into())
+        .map_err(|e| anyhow::anyhow!("bind(): {}", e))?;
 
-    let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
+    let std_socket: std::net::UdpSocket = socket.into();
     Ok(UdpSocket::from_std(std_socket)?)
 }
 
