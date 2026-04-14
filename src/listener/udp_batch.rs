@@ -1,8 +1,14 @@
-//! High-performance UDP I/O using recvmmsg/sendmmsg on Linux.
-//! Falls back to standard recv_from/send_to on other platforms.
+//! High-performance UDP I/O using recvmmsg/sendmmsg on Linux via the
+//! safe `nix` wrappers. Falls back to standard recv_from/send_to on
+//! other platforms.
+//!
+//! This module is `#![forbid(unsafe_code)]` — every syscall goes
+//! through an audited `nix` wrapper.
+
+#![forbid(unsafe_code)]
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
 /// Maximum packets to receive/send in a single syscall
 const BATCH_SIZE: usize = 64;
@@ -25,58 +31,44 @@ pub struct SendPacket {
 /// Batch-receive UDP packets using recvmmsg (Linux only).
 /// Returns the number of packets received.
 #[cfg(target_os = "linux")]
-pub fn recvmmsg_batch(
-    fd: i32,
-    packets: &mut [RecvPacket],
-) -> io::Result<usize> {
-    use std::mem::zeroed;
+pub fn recvmmsg_batch(fd: i32, packets: &mut [RecvPacket]) -> io::Result<usize> {
+    use nix::sys::socket::{MsgFlags, MultiHeaders, SockaddrStorage, recvmmsg};
+    use std::io::IoSliceMut;
 
     let batch = packets.len().min(BATCH_SIZE);
     if batch == 0 {
         return Ok(0);
     }
 
-    let mut iovecs: Vec<libc::iovec> = Vec::with_capacity(batch);
-    let mut msgs: Vec<libc::mmsghdr> = Vec::with_capacity(batch);
-    let mut addrs: Vec<libc::sockaddr_storage> = Vec::with_capacity(batch);
+    let mut headers: MultiHeaders<SockaddrStorage> = MultiHeaders::preallocate(batch, None);
 
-    for i in 0..batch {
-        addrs.push(unsafe { zeroed() });
-        iovecs.push(libc::iovec {
-            iov_base: packets[i].buf.as_mut_ptr() as *mut libc::c_void,
-            iov_len: PKT_SIZE,
-        });
-    }
+    // Collect (bytes_received, source_address) pairs inside this scope so
+    // the iovec borrows from `packets` are released before we mutate
+    // `packets[i].len` / `.src` below.
+    let collected: Vec<(usize, Option<SockaddrStorage>)> = {
+        let mut slice_groups: Vec<[IoSliceMut<'_>; 1]> = packets[..batch]
+            .iter_mut()
+            .map(|p| [IoSliceMut::new(&mut p.buf[..])])
+            .collect();
 
-    for i in 0..batch {
-        let mut hdr: libc::mmsghdr = unsafe { zeroed() };
-        hdr.msg_hdr.msg_name = &mut addrs[i] as *mut _ as *mut libc::c_void;
-        hdr.msg_hdr.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as u32;
-        hdr.msg_hdr.msg_iov = &mut iovecs[i];
-        hdr.msg_hdr.msg_iovlen = 1;
-        msgs.push(hdr);
-    }
-
-    let ret = unsafe {
-        libc::recvmmsg(
+        recvmmsg(
             fd,
-            msgs.as_mut_ptr(),
-            batch as u32,
-            libc::MSG_WAITFORONE,
-            std::ptr::null_mut(),
+            &mut headers,
+            slice_groups.iter_mut(),
+            MsgFlags::MSG_WAITFORONE,
+            None,
         )
+        .map_err(io::Error::from)?
+        .map(|r| (r.bytes, r.address))
+        .collect()
     };
 
-    if ret < 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let count = ret as usize;
-
-    // Extract results
-    for i in 0..count {
-        packets[i].len = msgs[i].msg_len as usize;
-        packets[i].src = sockaddr_to_socketaddr(&addrs[i], msgs[i].msg_hdr.msg_namelen);
+    let count = collected.len();
+    for (i, (bytes, addr)) in collected.into_iter().enumerate() {
+        packets[i].len = bytes;
+        if let Some(addr) = addr {
+            packets[i].src = sockaddr_storage_to_socketaddr(&addr);
+        }
     }
 
     Ok(count)
@@ -84,103 +76,71 @@ pub fn recvmmsg_batch(
 
 /// Batch-send UDP packets using sendmmsg (Linux only).
 #[cfg(target_os = "linux")]
-pub fn sendmmsg_batch(
-    fd: i32,
-    packets: &[SendPacket],
-) -> io::Result<usize> {
-    use std::mem::zeroed;
+pub fn sendmmsg_batch(fd: i32, packets: &[SendPacket]) -> io::Result<usize> {
+    use nix::sys::socket::{MsgFlags, MultiHeaders, SockaddrStorage, sendmmsg};
+    use std::io::IoSlice;
 
     let batch = packets.len().min(BATCH_SIZE);
     if batch == 0 {
         return Ok(0);
     }
 
-    let mut addrs: Vec<libc::sockaddr_storage> = Vec::with_capacity(batch);
-    let mut addr_lens: Vec<u32> = Vec::with_capacity(batch);
-    let mut iovecs: Vec<libc::iovec> = Vec::with_capacity(batch);
-    let mut msgs: Vec<libc::mmsghdr> = Vec::with_capacity(batch);
+    let mut headers: MultiHeaders<SockaddrStorage> = MultiHeaders::preallocate(batch, None);
 
-    for pkt in packets.iter().take(batch) {
-        let (addr, len) = socketaddr_to_sockaddr(&pkt.dest);
-        addrs.push(addr);
-        addr_lens.push(len);
-        iovecs.push(libc::iovec {
-            iov_base: pkt.data.as_ptr() as *mut libc::c_void,
-            iov_len: pkt.data.len(),
-        });
-    }
+    let slice_groups: Vec<[IoSlice<'_>; 1]> = packets[..batch]
+        .iter()
+        .map(|p| [IoSlice::new(&p.data)])
+        .collect();
 
-    for i in 0..batch {
-        let mut hdr: libc::mmsghdr = unsafe { zeroed() };
-        hdr.msg_hdr.msg_name = &mut addrs[i] as *mut _ as *mut libc::c_void;
-        hdr.msg_hdr.msg_namelen = addr_lens[i];
-        hdr.msg_hdr.msg_iov = &mut iovecs[i];
-        hdr.msg_hdr.msg_iovlen = 1;
-        msgs.push(hdr);
-    }
+    let addrs: Vec<Option<SockaddrStorage>> = packets[..batch]
+        .iter()
+        .map(|p| Some(SockaddrStorage::from(p.dest)))
+        .collect();
 
-    let ret = unsafe {
-        libc::sendmmsg(fd, msgs.as_mut_ptr(), batch as u32, 0)
-    };
+    let results = sendmmsg(
+        fd,
+        &mut headers,
+        slice_groups.iter(),
+        &addrs,
+        [],
+        MsgFlags::empty(),
+    )
+    .map_err(io::Error::from)?;
 
-    if ret < 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    Ok(ret as usize)
+    Ok(results.count())
 }
 
 #[cfg(target_os = "linux")]
-fn sockaddr_to_socketaddr(addr: &libc::sockaddr_storage, _len: u32) -> SocketAddr {
-    unsafe {
-        if addr.ss_family == libc::AF_INET as u16 {
-            let addr4 = &*(addr as *const _ as *const libc::sockaddr_in);
-            SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(addr4.sin_addr.s_addr))),
-                u16::from_be(addr4.sin_port),
-            )
-        } else {
-            let addr6 = &*(addr as *const _ as *const libc::sockaddr_in6);
-            SocketAddr::new(
-                std::net::IpAddr::V6(std::net::Ipv6Addr::from(addr6.sin6_addr.s6_addr)),
-                u16::from_be(addr6.sin6_port),
-            )
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn socketaddr_to_sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, u32) {
-    unsafe {
-        let mut storage: libc::sockaddr_storage = std::mem::zeroed();
-        match addr {
-            SocketAddr::V4(a) => {
-                let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
-                s.sin_family = libc::AF_INET as _;
-                s.sin_port = a.port().to_be();
-                s.sin_addr.s_addr = u32::from(*a.ip()).to_be();
-                (storage, std::mem::size_of::<libc::sockaddr_in>() as u32)
-            }
-            SocketAddr::V6(a) => {
-                let s = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
-                s.sin6_family = libc::AF_INET6 as _;
-                s.sin6_port = a.port().to_be();
-                s.sin6_addr.s6_addr = a.ip().octets();
-                (storage, std::mem::size_of::<libc::sockaddr_in6>() as u32)
-            }
-        }
+fn sockaddr_storage_to_socketaddr(ss: &nix::sys::socket::SockaddrStorage) -> SocketAddr {
+    if let Some(sa4) = ss.as_sockaddr_in() {
+        SocketAddr::V4(SocketAddrV4::new(sa4.ip(), sa4.port()))
+    } else if let Some(sa6) = ss.as_sockaddr_in6() {
+        SocketAddr::V6(SocketAddrV6::new(
+            sa6.ip(),
+            sa6.port(),
+            sa6.flowinfo(),
+            sa6.scope_id(),
+        ))
+    } else {
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
     }
 }
 
 // Non-Linux stubs
 #[cfg(not(target_os = "linux"))]
 pub fn recvmmsg_batch(_fd: i32, _packets: &mut [RecvPacket]) -> io::Result<usize> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "recvmmsg not available"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "recvmmsg not available",
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn sendmmsg_batch(_fd: i32, _packets: &[SendPacket]) -> io::Result<usize> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "sendmmsg not available"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "sendmmsg not available",
+    ))
 }
 
 /// Create pre-allocated receive packet batch.
