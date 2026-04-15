@@ -8,7 +8,9 @@
 #![forbid(unsafe_code)]
 
 use std::io;
-use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::net::{SocketAddrV4, SocketAddrV6};
 
 /// Maximum packets to receive/send in a single syscall
 const BATCH_SIZE: usize = 64;
