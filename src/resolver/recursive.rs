@@ -294,12 +294,38 @@ impl Resolver {
         };
 
         // Bailiwick validation: only cache records that are in-bailiwick
-        // for the queried name's zone
+        // for the queried name's zone OR are part of the legitimate CNAME
+        // chain starting from the query name.
+        //
+        // Without the CNAME-chain allowance the cache would drop the chained
+        // A/AAAA record (whose owner is the CNAME's target, not the query
+        // name) and only keep the CNAME itself. On the next lookup the
+        // resolver returns CNAME-only and clients like pkg(8) / libfetch
+        // decide there's no address — the symptom we just chased on the
+        // build VM ("Address family for host not supported" from
+        // pkg.FreeBSD.org despite a perfectly fine upstream reply).
         let query_name = &key.name;
+        let chain_names: std::collections::HashSet<DnsName> = {
+            let mut set = std::collections::HashSet::new();
+            set.insert(query_name.clone());
+            // Walk to a fixed point — answers may be in any order so a single
+            // pass isn't enough. Bounded by the answer count, so cheap.
+            loop {
+                let mut grew = false;
+                for rr in &response.answers {
+                    if !set.contains(&rr.name) { continue; }
+                    if let crate::protocol::rdata::RData::CNAME(target) = &rr.rdata {
+                        if set.insert(target.clone()) { grew = true; }
+                    }
+                }
+                if !grew { break; }
+            }
+            set
+        };
         let answers: Vec<_> = response
             .answers
             .iter()
-            .filter(|rr| is_in_bailiwick(&rr.name, query_name))
+            .filter(|rr| chain_names.contains(&rr.name) || is_in_bailiwick(&rr.name, query_name))
             .cloned()
             .collect();
         let authority: Vec<_> = response
@@ -435,5 +461,66 @@ mod tests {
         let resolver = Resolver::new(cache, vec![], 30, validator, true);
         assert!(resolver.inner.forwarders.is_empty());
         assert_eq!(resolver.inner.root_hints.len(), 13);
+    }
+
+    /// Regression: cache_response was filtering out CNAME-target records via
+    /// the bailiwick check, leaving only the CNAME in cache. Subsequent
+    /// lookups returned CNAME-only and clients (pkg(8) / libfetch) treated
+    /// the host as having no address.
+    #[test]
+    fn test_cache_response_keeps_cname_chain() {
+        use crate::cache::entry::CacheKey;
+        use crate::protocol::header::Header;
+        use crate::protocol::message::Message;
+        use crate::protocol::opcode::Opcode;
+        use crate::protocol::rdata::RData;
+        use crate::protocol::record::{Question, RecordClass, RecordType, ResourceRecord};
+        use std::net::Ipv4Addr;
+
+        let cache = CacheStore::new(1000, 60, 86400, 300);
+        let validator = DnssecValidator::new(false);
+        let resolver = Resolver::new(cache.clone(), vec![], 30, validator, true);
+
+        let qname = DnsName::from_str("pkg.freebsd.org").unwrap();
+        let target = DnsName::from_str("pkgmir.geo.freebsd.org").unwrap();
+        let response = Message {
+            header: Header {
+                id: 1, qr: true, opcode: Opcode::Query,
+                aa: false, tc: false, rd: true, ra: true,
+                ad: false, cd: false, rcode: Rcode::NoError,
+                qd_count: 1, an_count: 2, ns_count: 0, ar_count: 0,
+            },
+            questions: vec![Question {
+                name: qname.clone(),
+                qtype: RecordType::A,
+                qclass: RecordClass::IN,
+            }],
+            answers: vec![
+                ResourceRecord {
+                    name: qname.clone(),
+                    rtype: RecordType::CNAME,
+                    rclass: RecordClass::IN,
+                    ttl: 300,
+                    rdata: RData::CNAME(target.clone()),
+                },
+                ResourceRecord {
+                    name: target.clone(),
+                    rtype: RecordType::A,
+                    rclass: RecordClass::IN,
+                    ttl: 300,
+                    rdata: RData::A(Ipv4Addr::new(163, 237, 194, 42)),
+                },
+            ],
+            authority: vec![],
+            additional: vec![],
+        };
+
+        let key = CacheKey::new(qname.clone(), RecordType::A, RecordClass::IN);
+        resolver.cache_response(&key, &response);
+
+        let entry = cache.lookup(&key).expect("entry should be cached");
+        assert_eq!(entry.answers.len(), 2, "both CNAME and chained A must be cached");
+        assert!(entry.answers.iter().any(|rr| matches!(rr.rdata, RData::A(_))),
+            "chained A record must survive bailiwick filtering");
     }
 }
