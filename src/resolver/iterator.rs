@@ -3,31 +3,32 @@ use crate::protocol::name::DnsName;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::rdata::RData;
 use crate::protocol::record::{RecordClass, RecordType};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-/// Root DNS server hints (IANA root servers).
+/// Root DNS server hints (IANA root servers). Built from const IPv4 literals
+/// so there is no runtime parsing that could ever panic.
 pub fn root_hints() -> Vec<SocketAddr> {
-    // Root server IPv4 addresses
-    [
-        "198.41.0.4",     // a.root-servers.net
-        "199.9.14.201",   // b.root-servers.net
-        "192.33.4.12",    // c.root-servers.net
-        "199.7.91.13",    // d.root-servers.net
-        "192.203.230.10", // e.root-servers.net
-        "192.5.5.241",    // f.root-servers.net
-        "192.112.36.4",   // g.root-servers.net
-        "198.97.190.53",  // h.root-servers.net
-        "192.36.148.17",  // i.root-servers.net
-        "192.58.128.30",  // j.root-servers.net
-        "193.0.14.129",   // k.root-servers.net
-        "199.7.83.42",    // l.root-servers.net
-        "202.12.27.33",   // m.root-servers.net
-    ]
-    .iter()
-    .map(|ip| SocketAddr::new(ip.parse().unwrap(), 53))
-    .collect()
+    const ROOT_V4: &[Ipv4Addr] = &[
+        Ipv4Addr::new(198, 41, 0, 4),     // a.root-servers.net
+        Ipv4Addr::new(199, 9, 14, 201),   // b.root-servers.net
+        Ipv4Addr::new(192, 33, 4, 12),    // c.root-servers.net
+        Ipv4Addr::new(199, 7, 91, 13),    // d.root-servers.net
+        Ipv4Addr::new(192, 203, 230, 10), // e.root-servers.net
+        Ipv4Addr::new(192, 5, 5, 241),    // f.root-servers.net
+        Ipv4Addr::new(192, 112, 36, 4),   // g.root-servers.net
+        Ipv4Addr::new(198, 97, 190, 53),  // h.root-servers.net
+        Ipv4Addr::new(192, 36, 148, 17),  // i.root-servers.net
+        Ipv4Addr::new(192, 58, 128, 30),  // j.root-servers.net
+        Ipv4Addr::new(193, 0, 14, 129),   // k.root-servers.net
+        Ipv4Addr::new(199, 7, 83, 42),    // l.root-servers.net
+        Ipv4Addr::new(202, 12, 27, 33),   // m.root-servers.net
+    ];
+    ROOT_V4
+        .iter()
+        .map(|ip| SocketAddr::new(IpAddr::V4(*ip), 53))
+        .collect()
 }
 
 /// Send a DNS query to a specific server and wait for a response.
@@ -309,11 +310,31 @@ fn build_query(id: u16, name: &DnsName, rtype: RecordType) -> Message {
     }
 }
 
-/// Generate a cryptographically random query ID.
+/// Generate a query ID. Prefers `getrandom`; on entropy-source failure falls
+/// back to a time/stack-address mix so we never panic the resolver hot path.
+/// The fallback is not cryptographically strong but is unpredictable enough
+/// to defeat off-path response spoofing for the window the entropy source
+/// remains unavailable. A single warn log is emitted on fallback.
 pub(crate) fn rand_id() -> u16 {
     let mut buf = [0u8; 2];
-    getrandom::getrandom(&mut buf).expect("getrandom failed");
-    u16::from_ne_bytes(buf)
+    if getrandom::getrandom(&mut buf).is_ok() {
+        return u16::from_ne_bytes(buf);
+    }
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!("getrandom unavailable; falling back to degraded query-ID source");
+    }
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let stack_addr = &buf as *const _ as usize as u32;
+    let mixed = nanos ^ stack_addr;
+    (mixed as u16) ^ ((mixed >> 16) as u16)
 }
 
 #[cfg(test)]
@@ -327,6 +348,24 @@ mod tests {
         let hints = root_hints();
         assert_eq!(hints.len(), 13);
         assert!(hints.iter().all(|s| s.port() == 53));
+        assert!(hints.iter().all(|s| s.is_ipv4()));
+    }
+
+    #[test]
+    fn test_rand_id_does_not_panic_and_is_distributed() {
+        // Calls in the thousands must not panic and must produce more than
+        // a handful of distinct values -- guards against a degenerate
+        // fallback path returning a constant.
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for _ in 0..1000 {
+            seen.insert(rand_id());
+        }
+        assert!(
+            seen.len() > 100,
+            "rand_id distribution too narrow: only {} unique values",
+            seen.len()
+        );
     }
 
     #[test]

@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "rdns"
-version = "1.12.3"
+version = "1.12.4"
 dependencies = [
  "anyhow",
  "arc-swap",
