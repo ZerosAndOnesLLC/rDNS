@@ -19,6 +19,8 @@ pub enum RecordType {
     NSEC,     // 47 - Next secure (DNSSEC)
     DNSKEY,   // 48 - DNS key (DNSSEC)
     NSEC3,    // 50 - NSEC3 (DNSSEC)
+    SVCB,     // 64 - Service binding (RFC 9460)
+    HTTPS,    // 65 - HTTPS service binding (RFC 9460)
     CAA,      // 257 - Certification authority authorization
     Unknown(u16),
 }
@@ -41,6 +43,8 @@ impl From<u16> for RecordType {
             47 => Self::NSEC,
             48 => Self::DNSKEY,
             50 => Self::NSEC3,
+            64 => Self::SVCB,
+            65 => Self::HTTPS,
             257 => Self::CAA,
             v => Self::Unknown(v),
         }
@@ -65,6 +69,8 @@ impl From<RecordType> for u16 {
             RecordType::NSEC => 47,
             RecordType::DNSKEY => 48,
             RecordType::NSEC3 => 50,
+            RecordType::SVCB => 64,
+            RecordType::HTTPS => 65,
             RecordType::CAA => 257,
             RecordType::Unknown(v) => v,
         }
@@ -89,6 +95,8 @@ impl std::fmt::Display for RecordType {
             Self::NSEC => write!(f, "NSEC"),
             Self::DNSKEY => write!(f, "DNSKEY"),
             Self::NSEC3 => write!(f, "NSEC3"),
+            Self::SVCB => write!(f, "SVCB"),
+            Self::HTTPS => write!(f, "HTTPS"),
             Self::CAA => write!(f, "CAA"),
             Self::Unknown(v) => write!(f, "TYPE{}", v),
         }

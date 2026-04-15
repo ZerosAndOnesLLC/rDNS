@@ -15,6 +15,9 @@ pub enum RData {
     TXT(Vec<Vec<u8>>),
     SRV(SrvData),
     CAA(CaaData),
+    /// RFC 9460 SVCB — also reused by HTTPS which differs only in type code.
+    SVCB(SvcbData),
+    HTTPS(SvcbData),
     /// Fallback for unsupported or DNSSEC types — stores raw bytes
     Raw { type_code: u16, data: Vec<u8> },
 }
@@ -43,6 +46,16 @@ pub struct CaaData {
     pub flags: u8,
     pub tag: String,
     pub value: Vec<u8>,
+}
+
+/// RFC 9460 SVCB/HTTPS rdata. TargetName is uncompressed on the wire.
+/// SvcParams is kept as an opaque blob so we can round-trip unknown/future
+/// parameter keys without losing data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SvcbData {
+    pub priority: u16,
+    pub target: DnsName,
+    pub params: Vec<u8>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -203,6 +216,24 @@ impl RData {
                 Ok(Self::CAA(CaaData { flags, tag, value }))
             }
 
+            RecordType::SVCB | RecordType::HTTPS => {
+                if rdlength < 3 {
+                    return Err(RDataError::TooShort("SVCB/HTTPS"));
+                }
+                let priority = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+                let (target, consumed) = DnsName::decode(buf, offset + 2)?;
+                if 2 + consumed > rdlength {
+                    return Err(RDataError::TooShort("SVCB/HTTPS target"));
+                }
+                let params_start = offset + 2 + consumed;
+                let params = buf[params_start..rdata_end].to_vec();
+                let data = SvcbData { priority, target, params };
+                Ok(match rtype {
+                    RecordType::HTTPS => Self::HTTPS(data),
+                    _ => Self::SVCB(data),
+                })
+            }
+
             // For DNSSEC and unknown types, store raw bytes
             _ => {
                 let data = buf[offset..rdata_end].to_vec();
@@ -259,9 +290,78 @@ impl RData {
                 buf.extend_from_slice(caa.tag.as_bytes());
                 buf.extend_from_slice(&caa.value);
             }
+            Self::SVCB(svcb) | Self::HTTPS(svcb) => {
+                buf.extend_from_slice(&svcb.priority.to_be_bytes());
+                svcb.target.encode(buf);
+                buf.extend_from_slice(&svcb.params);
+            }
             Self::Raw { data, .. } => {
                 buf.extend_from_slice(data);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::name::DnsName;
+
+    fn roundtrip(rtype: RecordType, rdata: &RData) -> RData {
+        let mut buf = Vec::new();
+        rdata.encode(&mut buf);
+        RData::decode(rtype, &buf, 0, buf.len()).expect("decode")
+    }
+
+    #[test]
+    fn https_alias_mode_roundtrip() {
+        let rdata = RData::HTTPS(SvcbData {
+            priority: 0,
+            target: DnsName::from_str("svc.example.com").unwrap(),
+            params: Vec::new(),
+        });
+        assert_eq!(roundtrip(RecordType::HTTPS, &rdata), rdata);
+    }
+
+    #[test]
+    fn https_service_mode_with_params_roundtrip() {
+        // SvcParamKey=1 (alpn), value length 9, "h2"+"http/1.1" length-prefixed
+        let params = vec![
+            0x00, 0x01, // key: alpn
+            0x00, 0x09, // value length: 9
+            0x02, b'h', b'2',
+            0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1',
+        ];
+        let rdata = RData::HTTPS(SvcbData {
+            priority: 1,
+            target: DnsName::root(),
+            params,
+        });
+        assert_eq!(roundtrip(RecordType::HTTPS, &rdata), rdata);
+    }
+
+    #[test]
+    fn svcb_roundtrip() {
+        let rdata = RData::SVCB(SvcbData {
+            priority: 5,
+            target: DnsName::from_str("backend.example.com").unwrap(),
+            params: vec![0x00, 0x03, 0x00, 0x02, 0x01, 0xBB], // port=443
+        });
+        assert_eq!(roundtrip(RecordType::SVCB, &rdata), rdata);
+    }
+
+    #[test]
+    fn https_truncated_rdata_errors() {
+        // Only the priority field, no target, no params.
+        let buf = [0x00, 0x01];
+        let err = RData::decode(RecordType::HTTPS, &buf, 0, buf.len());
+        assert!(err.is_err(), "expected truncated HTTPS to error, got {:?}", err);
+    }
+
+    #[test]
+    fn https_too_short_for_priority_errors() {
+        let buf = [0x00];
+        let err = RData::decode(RecordType::HTTPS, &buf, 0, buf.len());
+        assert!(err.is_err());
     }
 }
