@@ -15,6 +15,8 @@ pub enum RData {
     TXT(Vec<Vec<u8>>),
     SRV(SrvData),
     CAA(CaaData),
+    /// RFC 1035 HINFO (cpu, os). Also used for RFC 8482 ANY responses.
+    HINFO { cpu: Vec<u8>, os: Vec<u8> },
     /// RFC 9460 SVCB — also reused by HTTPS which differs only in type code.
     SVCB(SvcbData),
     HTTPS(SvcbData),
@@ -216,6 +218,29 @@ impl RData {
                 Ok(Self::CAA(CaaData { flags, tag, value }))
             }
 
+            RecordType::HINFO => {
+                // Two length-prefixed character-strings: cpu, os.
+                if rdlength < 1 {
+                    return Err(RDataError::TooShort("HINFO"));
+                }
+                let cpu_len = buf[offset] as usize;
+                let cpu_end = offset + 1 + cpu_len;
+                if cpu_end > rdata_end {
+                    return Err(RDataError::TooShort("HINFO cpu"));
+                }
+                let cpu = buf[offset + 1..cpu_end].to_vec();
+                if cpu_end >= rdata_end {
+                    return Err(RDataError::TooShort("HINFO os"));
+                }
+                let os_len = buf[cpu_end] as usize;
+                let os_end = cpu_end + 1 + os_len;
+                if os_end > rdata_end {
+                    return Err(RDataError::TooShort("HINFO os"));
+                }
+                let os = buf[cpu_end + 1..os_end].to_vec();
+                Ok(Self::HINFO { cpu, os })
+            }
+
             RecordType::SVCB | RecordType::HTTPS => {
                 if rdlength < 3 {
                     return Err(RDataError::TooShort("SVCB/HTTPS"));
@@ -290,6 +315,14 @@ impl RData {
                 buf.extend_from_slice(caa.tag.as_bytes());
                 buf.extend_from_slice(&caa.value);
             }
+            Self::HINFO { cpu, os } => {
+                let cl = cpu.len().min(255);
+                buf.push(cl as u8);
+                buf.extend_from_slice(&cpu[..cl]);
+                let ol = os.len().min(255);
+                buf.push(ol as u8);
+                buf.extend_from_slice(&os[..ol]);
+            }
             Self::SVCB(svcb) | Self::HTTPS(svcb) => {
                 buf.extend_from_slice(&svcb.priority.to_be_bytes());
                 svcb.target.encode(buf);
@@ -356,6 +389,28 @@ mod tests {
         let buf = [0x00, 0x01];
         let err = RData::decode(RecordType::HTTPS, &buf, 0, buf.len());
         assert!(err.is_err(), "expected truncated HTTPS to error, got {:?}", err);
+    }
+
+    #[test]
+    fn hinfo_roundtrip() {
+        let rdata = RData::HINFO {
+            cpu: b"RFC8482".to_vec(),
+            os: Vec::new(),
+        };
+        assert_eq!(roundtrip(RecordType::HINFO, &rdata), rdata);
+
+        let rdata2 = RData::HINFO {
+            cpu: b"amd64".to_vec(),
+            os: b"linux".to_vec(),
+        };
+        assert_eq!(roundtrip(RecordType::HINFO, &rdata2), rdata2);
+    }
+
+    #[test]
+    fn hinfo_truncated_errors() {
+        // cpu_len=5 but only 2 bytes follow
+        let buf = [0x05, b'a', b'b'];
+        assert!(RData::decode(RecordType::HINFO, &buf, 0, buf.len()).is_err());
     }
 
     #[test]

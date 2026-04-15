@@ -44,6 +44,12 @@ impl AuthEngine {
             return AuthResult::Answer(self.build_referral(name, rtype, rclass, ns_rrset, &zone));
         }
 
+        // RFC 8482: respond to ANY queries with a minimal synthesized HINFO
+        // ("RFC8482"/""). Avoids amplification and resists DNS-walk reconnaissance.
+        if rtype == RecordType::ANY {
+            return AuthResult::Answer(self.build_rfc8482(name, rclass, &zone));
+        }
+
         // Look up exact match
         if let Some(rrset) = zone.lookup(name, rtype) {
             return AuthResult::Answer(self.build_answer(
@@ -208,6 +214,50 @@ impl AuthEngine {
                 qclass: rclass,
             }],
             answers: vec![],
+            authority: vec![zone.soa_record()],
+            additional: vec![],
+        }
+    }
+
+    fn build_rfc8482(
+        &self,
+        name: &DnsName,
+        rclass: RecordClass,
+        zone: &crate::auth::zone::Zone,
+    ) -> Message {
+        let hinfo = ResourceRecord {
+            name: name.clone(),
+            rtype: RecordType::HINFO,
+            rclass,
+            ttl: 3789, // Matches the TTL Cloudflare returns for its RFC 8482 replies.
+            rdata: RData::HINFO {
+                cpu: b"RFC8482".to_vec(),
+                os: Vec::new(),
+            },
+        };
+        Message {
+            header: Header {
+                id: 0,
+                qr: true,
+                opcode: Opcode::Query,
+                aa: true,
+                tc: false,
+                rd: false,
+                ra: false,
+                ad: false,
+                cd: false,
+                rcode: Rcode::NoError,
+                qd_count: 1,
+                an_count: 1,
+                ns_count: 1,
+                ar_count: 0,
+            },
+            questions: vec![Question {
+                name: name.clone(),
+                qtype: RecordType::ANY,
+                qclass: rclass,
+            }],
+            answers: vec![hinfo],
             authority: vec![zone.soa_record()],
             additional: vec![],
         }
@@ -396,6 +446,32 @@ ns2 IN  A   192.0.2.2
                 );
             }
             AuthResult::NotAuthoritative => panic!("Expected wildcard answer"),
+        }
+    }
+
+    #[test]
+    fn test_any_query_rfc8482() {
+        let engine = test_engine();
+        let result = engine.query(
+            &DnsName::from_str("example.com").unwrap(),
+            RecordType::ANY,
+            RecordClass::IN,
+        );
+
+        match result {
+            AuthResult::Answer(msg) => {
+                assert_eq!(msg.header.rcode, Rcode::NoError);
+                assert!(msg.header.aa);
+                assert_eq!(msg.answers.len(), 1);
+                assert_eq!(msg.answers[0].rtype, RecordType::HINFO);
+                match &msg.answers[0].rdata {
+                    RData::HINFO { cpu, .. } => assert_eq!(cpu, b"RFC8482"),
+                    other => panic!("expected HINFO, got {:?}", other),
+                }
+                assert_eq!(msg.authority.len(), 1);
+                assert_eq!(msg.authority[0].rtype, RecordType::SOA);
+            }
+            AuthResult::NotAuthoritative => panic!("Expected RFC 8482 ANY answer"),
         }
     }
 

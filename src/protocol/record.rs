@@ -9,6 +9,7 @@ pub enum RecordType {
     CNAME,    // 5 - Canonical name
     SOA,      // 6 - Start of authority
     PTR,      // 12 - Pointer
+    HINFO,    // 13 - Host info (used for RFC 8482 ANY responses)
     MX,       // 15 - Mail exchange
     TXT,      // 16 - Text
     AAAA,     // 28 - IPv6 address
@@ -22,6 +23,7 @@ pub enum RecordType {
     SVCB,     // 64 - Service binding (RFC 9460)
     HTTPS,    // 65 - HTTPS service binding (RFC 9460)
     CAA,      // 257 - Certification authority authorization
+    ANY,      // 255 - Wildcard query type (QTYPE only)
     Unknown(u16),
 }
 
@@ -33,6 +35,7 @@ impl From<u16> for RecordType {
             5 => Self::CNAME,
             6 => Self::SOA,
             12 => Self::PTR,
+            13 => Self::HINFO,
             15 => Self::MX,
             16 => Self::TXT,
             28 => Self::AAAA,
@@ -45,6 +48,7 @@ impl From<u16> for RecordType {
             50 => Self::NSEC3,
             64 => Self::SVCB,
             65 => Self::HTTPS,
+            255 => Self::ANY,
             257 => Self::CAA,
             v => Self::Unknown(v),
         }
@@ -59,6 +63,7 @@ impl From<RecordType> for u16 {
             RecordType::CNAME => 5,
             RecordType::SOA => 6,
             RecordType::PTR => 12,
+            RecordType::HINFO => 13,
             RecordType::MX => 15,
             RecordType::TXT => 16,
             RecordType::AAAA => 28,
@@ -71,6 +76,7 @@ impl From<RecordType> for u16 {
             RecordType::NSEC3 => 50,
             RecordType::SVCB => 64,
             RecordType::HTTPS => 65,
+            RecordType::ANY => 255,
             RecordType::CAA => 257,
             RecordType::Unknown(v) => v,
         }
@@ -85,6 +91,7 @@ impl std::fmt::Display for RecordType {
             Self::CNAME => write!(f, "CNAME"),
             Self::SOA => write!(f, "SOA"),
             Self::PTR => write!(f, "PTR"),
+            Self::HINFO => write!(f, "HINFO"),
             Self::MX => write!(f, "MX"),
             Self::TXT => write!(f, "TXT"),
             Self::AAAA => write!(f, "AAAA"),
@@ -97,6 +104,7 @@ impl std::fmt::Display for RecordType {
             Self::NSEC3 => write!(f, "NSEC3"),
             Self::SVCB => write!(f, "SVCB"),
             Self::HTTPS => write!(f, "HTTPS"),
+            Self::ANY => write!(f, "ANY"),
             Self::CAA => write!(f, "CAA"),
             Self::Unknown(v) => write!(f, "TYPE{}", v),
         }
