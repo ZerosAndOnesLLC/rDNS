@@ -475,6 +475,163 @@ ns2 IN  A   192.0.2.2
         }
     }
 
+    // ---- Phase 4: per-record-type query path coverage ----
+
+    fn full_test_engine() -> AuthEngine {
+        use crate::auth::zone::Zone;
+        use crate::protocol::rdata::{CaaData, SoaData, SrvData, SvcbData};
+
+        let origin = DnsName::from_str("example.com").unwrap();
+        let soa = SoaData {
+            mname: DnsName::from_str("ns1.example.com").unwrap(),
+            rname: DnsName::from_str("admin.example.com").unwrap(),
+            serial: 2024010101,
+            refresh: 3600,
+            retry: 900,
+            expire: 604800,
+            minimum: 300,
+        };
+        let mut zone = Zone::new(origin.clone(), soa, 300);
+        // Also expose SOA via the rrset lookup path so `@ SOA` queries hit an answer.
+        let soa_rr = zone.soa_record();
+        zone.add_record(soa_rr);
+
+        let push = |zone: &mut Zone, name: &str, rtype, rdata| {
+            zone.add_record(ResourceRecord {
+                name: DnsName::from_str(name).unwrap(),
+                rtype,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata,
+            });
+        };
+
+        // Apex
+        push(&mut zone, "example.com", RecordType::NS, RData::NS(DnsName::from_str("ns1.example.com").unwrap()));
+        push(&mut zone, "example.com", RecordType::A, RData::A("93.184.216.34".parse().unwrap()));
+        push(&mut zone, "example.com", RecordType::AAAA, RData::AAAA("2001:db8::34".parse().unwrap()));
+        push(&mut zone, "example.com", RecordType::MX, RData::MX {
+            preference: 10,
+            exchange: DnsName::from_str("mail.example.com").unwrap(),
+        });
+        push(&mut zone, "example.com", RecordType::TXT, RData::TXT(vec![b"v=spf1 -all".to_vec()]));
+        push(&mut zone, "example.com", RecordType::CAA, RData::CAA(CaaData {
+            flags: 0,
+            tag: "issue".into(),
+            value: b"letsencrypt.org".to_vec(),
+        }));
+
+        // Labels
+        push(&mut zone, "www.example.com", RecordType::A, RData::A("93.184.216.34".parse().unwrap()));
+        push(&mut zone, "www.example.com", RecordType::AAAA, RData::AAAA("2001:db8::1".parse().unwrap()));
+        push(&mut zone, "mail.example.com", RecordType::A, RData::A("93.184.216.35".parse().unwrap()));
+        push(&mut zone, "_sip._tcp.example.com", RecordType::SRV, RData::SRV(SrvData {
+            priority: 10,
+            weight: 60,
+            port: 5060,
+            target: DnsName::from_str("sipserver.example.com").unwrap(),
+        }));
+        push(&mut zone, "alias.example.com", RecordType::CNAME,
+             RData::CNAME(DnsName::from_str("www.example.com").unwrap()));
+        push(&mut zone, "svc.example.com", RecordType::HTTPS, RData::HTTPS(SvcbData {
+            priority: 1,
+            target: DnsName::from_str("www.example.com").unwrap(),
+            params: vec![0x00, 0x01, 0x00, 0x03, 0x02, b'h', b'2'],
+        }));
+        push(&mut zone, "svc.example.com", RecordType::SVCB, RData::SVCB(SvcbData {
+            priority: 2,
+            target: DnsName::from_str("www.example.com").unwrap(),
+            params: Vec::new(),
+        }));
+
+        let catalog = ZoneCatalog::new();
+        catalog.insert(zone);
+        AuthEngine::new(catalog)
+    }
+
+    fn assert_answered(engine: &AuthEngine, name: &str, rtype: RecordType) -> Message {
+        let n = DnsName::from_str(name).unwrap();
+        match engine.query(&n, rtype, RecordClass::IN) {
+            AuthResult::Answer(m) => m,
+            AuthResult::NotAuthoritative => panic!("not authoritative for {} {:?}", name, rtype),
+        }
+    }
+
+    #[test]
+    fn test_every_type_query() {
+        let e = full_test_engine();
+
+        let m = assert_answered(&e, "example.com", RecordType::NS);
+        assert_eq!(m.header.rcode, Rcode::NoError);
+        assert_eq!(m.answers[0].rtype, RecordType::NS);
+
+        let m = assert_answered(&e, "example.com", RecordType::SOA);
+        assert_eq!(m.answers[0].rtype, RecordType::SOA);
+
+        let m = assert_answered(&e, "www.example.com", RecordType::A);
+        assert_eq!(m.answers[0].rtype, RecordType::A);
+
+        let m = assert_answered(&e, "www.example.com", RecordType::AAAA);
+        assert_eq!(m.answers[0].rtype, RecordType::AAAA);
+
+        let m = assert_answered(&e, "example.com", RecordType::MX);
+        assert_eq!(m.answers[0].rtype, RecordType::MX);
+
+        let m = assert_answered(&e, "example.com", RecordType::TXT);
+        assert_eq!(m.answers[0].rtype, RecordType::TXT);
+
+        let m = assert_answered(&e, "example.com", RecordType::CAA);
+        assert_eq!(m.answers[0].rtype, RecordType::CAA);
+
+        let m = assert_answered(&e, "_sip._tcp.example.com", RecordType::SRV);
+        assert_eq!(m.answers[0].rtype, RecordType::SRV);
+
+        let m = assert_answered(&e, "alias.example.com", RecordType::A);
+        assert_eq!(m.answers[0].rtype, RecordType::CNAME);
+
+        let m = assert_answered(&e, "svc.example.com", RecordType::HTTPS);
+        assert_eq!(m.answers[0].rtype, RecordType::HTTPS);
+
+        let m = assert_answered(&e, "svc.example.com", RecordType::SVCB);
+        assert_eq!(m.answers[0].rtype, RecordType::SVCB);
+    }
+
+    #[test]
+    fn test_any_query_on_full_zone() {
+        let e = full_test_engine();
+        let m = assert_answered(&e, "example.com", RecordType::ANY);
+        assert_eq!(m.header.rcode, Rcode::NoError);
+        assert_eq!(m.answers.len(), 1);
+        assert_eq!(m.answers[0].rtype, RecordType::HINFO);
+    }
+
+    #[test]
+    fn test_response_wire_encode_every_type() {
+        // Proves each authoritative response round-trips through the wire format.
+        let e = full_test_engine();
+        let cases: &[(&str, RecordType)] = &[
+            ("example.com", RecordType::NS),
+            ("example.com", RecordType::SOA),
+            ("www.example.com", RecordType::A),
+            ("www.example.com", RecordType::AAAA),
+            ("example.com", RecordType::MX),
+            ("example.com", RecordType::TXT),
+            ("example.com", RecordType::CAA),
+            ("_sip._tcp.example.com", RecordType::SRV),
+            ("alias.example.com", RecordType::A),
+            ("svc.example.com", RecordType::HTTPS),
+            ("svc.example.com", RecordType::SVCB),
+            ("example.com", RecordType::ANY),
+        ];
+        for (name, qtype) in cases {
+            let msg = assert_answered(&e, name, *qtype);
+            let wire = msg.encode();
+            let decoded = Message::decode(&wire).expect("decode response");
+            assert_eq!(decoded.header.rcode, msg.header.rcode);
+            assert_eq!(decoded.answers.len(), msg.answers.len());
+        }
+    }
+
     #[test]
     fn test_not_authoritative() {
         let engine = test_engine();
