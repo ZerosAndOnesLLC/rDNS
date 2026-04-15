@@ -419,4 +419,180 @@ mod tests {
         let err = RData::decode(RecordType::HTTPS, &buf, 0, buf.len());
         assert!(err.is_err());
     }
+
+    // ---- Phase 3: comprehensive per-type round-trip coverage ----
+
+    #[test]
+    fn a_roundtrip() {
+        let rdata = RData::A(std::net::Ipv4Addr::new(192, 0, 2, 1));
+        assert_eq!(roundtrip(RecordType::A, &rdata), rdata);
+    }
+
+    #[test]
+    fn aaaa_roundtrip() {
+        let rdata = RData::AAAA("2001:db8::1".parse().unwrap());
+        assert_eq!(roundtrip(RecordType::AAAA, &rdata), rdata);
+    }
+
+    #[test]
+    fn ns_roundtrip() {
+        let rdata = RData::NS(DnsName::from_str("ns1.example.com").unwrap());
+        assert_eq!(roundtrip(RecordType::NS, &rdata), rdata);
+    }
+
+    #[test]
+    fn cname_roundtrip() {
+        let rdata = RData::CNAME(DnsName::from_str("target.example.com").unwrap());
+        assert_eq!(roundtrip(RecordType::CNAME, &rdata), rdata);
+    }
+
+    #[test]
+    fn ptr_roundtrip() {
+        let rdata = RData::PTR(DnsName::from_str("host.example.com").unwrap());
+        assert_eq!(roundtrip(RecordType::PTR, &rdata), rdata);
+    }
+
+    #[test]
+    fn mx_roundtrip() {
+        let rdata = RData::MX {
+            preference: 10,
+            exchange: DnsName::from_str("mail.example.com").unwrap(),
+        };
+        assert_eq!(roundtrip(RecordType::MX, &rdata), rdata);
+    }
+
+    #[test]
+    fn soa_roundtrip() {
+        let rdata = RData::SOA(SoaData {
+            mname: DnsName::from_str("ns1.example.com").unwrap(),
+            rname: DnsName::from_str("admin.example.com").unwrap(),
+            serial: 2024010101,
+            refresh: 3600,
+            retry: 900,
+            expire: 604800,
+            minimum: 300,
+        });
+        assert_eq!(roundtrip(RecordType::SOA, &rdata), rdata);
+    }
+
+    #[test]
+    fn txt_single_string_roundtrip() {
+        let rdata = RData::TXT(vec![b"hello world".to_vec()]);
+        assert_eq!(roundtrip(RecordType::TXT, &rdata), rdata);
+    }
+
+    #[test]
+    fn txt_multi_string_roundtrip() {
+        let rdata = RData::TXT(vec![
+            b"v=spf1".to_vec(),
+            b"ip4:192.0.2.0/24".to_vec(),
+            b"-all".to_vec(),
+        ]);
+        assert_eq!(roundtrip(RecordType::TXT, &rdata), rdata);
+    }
+
+    #[test]
+    fn txt_empty_string_roundtrip() {
+        let rdata = RData::TXT(vec![Vec::new()]);
+        assert_eq!(roundtrip(RecordType::TXT, &rdata), rdata);
+    }
+
+    #[test]
+    fn txt_max_length_string_roundtrip() {
+        let rdata = RData::TXT(vec![vec![b'x'; 255]]);
+        assert_eq!(roundtrip(RecordType::TXT, &rdata), rdata);
+    }
+
+    #[test]
+    fn srv_roundtrip() {
+        let rdata = RData::SRV(SrvData {
+            priority: 10,
+            weight: 60,
+            port: 5060,
+            target: DnsName::from_str("sipserver.example.com").unwrap(),
+        });
+        assert_eq!(roundtrip(RecordType::SRV, &rdata), rdata);
+    }
+
+    #[test]
+    fn caa_roundtrip() {
+        let rdata = RData::CAA(CaaData {
+            flags: 0,
+            tag: "issue".to_string(),
+            value: b"letsencrypt.org".to_vec(),
+        });
+        assert_eq!(roundtrip(RecordType::CAA, &rdata), rdata);
+    }
+
+    #[test]
+    fn dnssec_types_raw_roundtrip() {
+        // DS, DNSKEY, RRSIG, NSEC, NSEC3 all fall through to RData::Raw.
+        // We just need to prove the bytes come back untouched.
+        let payload = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78];
+        for rtype in [
+            RecordType::DS,
+            RecordType::DNSKEY,
+            RecordType::RRSIG,
+            RecordType::NSEC,
+            RecordType::NSEC3,
+        ] {
+            let decoded = RData::decode(rtype, &payload, 0, payload.len()).expect("decode");
+            let mut encoded = Vec::new();
+            decoded.encode(&mut encoded);
+            assert_eq!(encoded, payload, "{:?} round-trip", rtype);
+        }
+    }
+
+    // ---- Malformed-input assertions: must return Err, never panic ----
+
+    #[test]
+    fn a_wrong_length_errors() {
+        assert!(RData::decode(RecordType::A, &[1, 2, 3], 0, 3).is_err());
+        assert!(RData::decode(RecordType::A, &[1, 2, 3, 4, 5], 0, 5).is_err());
+    }
+
+    #[test]
+    fn aaaa_wrong_length_errors() {
+        assert!(RData::decode(RecordType::AAAA, &[0u8; 15], 0, 15).is_err());
+        assert!(RData::decode(RecordType::AAAA, &[0u8; 17], 0, 17).is_err());
+    }
+
+    #[test]
+    fn mx_too_short_errors() {
+        // rdlength 1 is not enough for a preference (2 bytes) + name.
+        assert!(RData::decode(RecordType::MX, &[0x00], 0, 1).is_err());
+    }
+
+    #[test]
+    fn srv_too_short_errors() {
+        assert!(RData::decode(RecordType::SRV, &[0u8; 4], 0, 4).is_err());
+    }
+
+    #[test]
+    fn caa_tag_len_overflow_errors() {
+        // flags=0, tag_len=10 but only 3 bytes of rdata follow.
+        let buf = [0x00, 0x0A, b'a', b'b', b'c'];
+        assert!(RData::decode(RecordType::CAA, &buf, 0, buf.len()).is_err());
+    }
+
+    #[test]
+    fn txt_string_len_overflow_errors() {
+        // string_len=10 but only 3 payload bytes.
+        let buf = [0x0A, b'a', b'b', b'c'];
+        assert!(RData::decode(RecordType::TXT, &buf, 0, buf.len()).is_err());
+    }
+
+    #[test]
+    fn rdata_end_past_buffer_errors() {
+        // Claiming rdlength 100 with a 4-byte buffer must be rejected, not panic.
+        let buf = [0u8; 4];
+        assert!(RData::decode(RecordType::A, &buf, 0, 100).is_err());
+    }
+
+    #[test]
+    fn cname_name_past_end_errors() {
+        // label says 10 bytes but only 3 follow.
+        let buf = [0x0A, b'a', b'b', b'c'];
+        assert!(RData::decode(RecordType::CNAME, &buf, 0, buf.len()).is_err());
+    }
 }
