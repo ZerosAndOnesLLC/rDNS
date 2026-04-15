@@ -28,7 +28,7 @@ struct CacheStoreInner {
     evictions: AtomicU64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CacheStats {
     pub entries: usize,
     pub max_entries: usize,

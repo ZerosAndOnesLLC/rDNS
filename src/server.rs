@@ -89,8 +89,11 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         ServerMode::Resolver => None,
     };
 
-    // Create RPZ engine and load policy zones from config
+    // Create RPZ engine, attach event sink for live block streaming, then load
+    // policy zones from config.
     let rpz_engine = RpzEngine::new();
+    let block_events = crate::rpz::BlockEvents::new();
+    rpz_engine.set_event_sink(block_events.clone());
     for zone_cfg in &cfg.rpz.zones {
         let zone_name = crate::protocol::name::DnsName::from_str(&zone_cfg.name)
             .unwrap_or_else(|_| crate::protocol::name::DnsName::root());
@@ -99,6 +102,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             Err(e) => tracing::error!(zone = %zone_cfg.name, error = %e, "Failed to load RPZ zone"),
         }
     }
+    let rpz_engine_arc = std::sync::Arc::new(rpz_engine.clone());
 
     // Create rate limiter
     let rate_limiter = RateLimiter::new(cfg.security.rate_limit);
@@ -177,9 +181,12 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         }
     }
 
-    // Start control socket
+    // Start control socket (with RPZ + block events for stats-json / watch /
+    // tail-blocks / top-blocked / reload-rpz commands).
     {
-        let control = crate::control::ControlServer::new(cache.clone());
+        let control = crate::control::ControlServer::new(cache.clone())
+            .with_rpz(rpz_engine_arc.clone())
+            .with_events(block_events.clone());
         let socket_path = cfg.control.socket.clone();
         handles.push(tokio::spawn(async move {
             if let Err(e) = control.serve(&socket_path).await {
@@ -187,6 +194,23 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             }
         }));
         info!(path = %cfg.control.socket.display(), "Control socket started");
+    }
+
+    // SIGHUP handler: rebuild RPZ state from disk without restarting.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let rpz_for_sighup = rpz_engine_arc.clone();
+        if let Ok(mut hup) = signal(SignalKind::hangup()) {
+            handles.push(tokio::spawn(async move {
+                while hup.recv().await.is_some() {
+                    match rpz_for_sighup.reload_all() {
+                        Ok(n) => info!(rules = n, "SIGHUP: RPZ reloaded"),
+                        Err(e) => tracing::error!(error = %e, "SIGHUP: RPZ reload failed"),
+                    }
+                }
+            }));
+        }
     }
 
     // Start Prometheus metrics endpoint
