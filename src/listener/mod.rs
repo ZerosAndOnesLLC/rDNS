@@ -144,7 +144,7 @@ fn build_refused_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcla
 /// Process an incoming DNS query and produce a response.
 /// Uses fast-path for cache hits to minimize allocations.
 /// `recursion_allowed` controls whether the source IP is permitted to use the resolver.
-async fn handle_query(
+pub(crate) async fn handle_query(
     buf: &[u8],
     cache: &CacheStore,
     resolver: &Option<Resolver>,
@@ -260,6 +260,23 @@ fn truncate_udp_response(response: &mut Vec<u8>) {
     response.truncate(pos.min(response.len()));
 }
 
+/// Validate that a byte slice is either empty (a Drop response) or a
+/// syntactically valid DNS reply: parseable header with QR=1 and an
+/// rcode in the well-known set. Used by the fuzz-lite tests.
+#[cfg(test)]
+pub(crate) fn is_valid_response(buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return true;
+    }
+    if buf.len() < HEADER_SIZE {
+        return false;
+    }
+    let flags = u16::from_be_bytes([buf[2], buf[3]]);
+    let qr = (flags >> 15) & 1 == 1;
+    let rcode = (flags & 0x000F) as u8;
+    qr && matches!(rcode, 0 | 1 | 2 | 3 | 4 | 5)
+}
+
 fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {
     let header = Header {
         id,
@@ -284,4 +301,137 @@ fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcl
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
     buf
+}
+
+#[cfg(test)]
+mod fuzz_lite_tests {
+    //! Phase 6: prove `handle_query` cannot panic on malformed input.
+
+    use super::*;
+    use crate::cache::CacheStore;
+    use crate::rpz::RpzEngine;
+    use std::time::Duration;
+
+    fn empty_components() -> (
+        CacheStore,
+        Option<crate::resolver::Resolver>,
+        Option<crate::auth::engine::AuthEngine>,
+        RpzEngine,
+    ) {
+        let cache = CacheStore::new(1000, 60, 86400, 60);
+        (cache, None, None, RpzEngine::new())
+    }
+
+    async fn drive(buf: &[u8]) -> Vec<u8> {
+        let (cache, resolver, auth, rpz) = empty_components();
+        let fut = handle_query(buf, &cache, &resolver, &auth, &rpz, true);
+        // 100 ms ceiling: with no resolver/auth this must return synchronously.
+        tokio::time::timeout(Duration::from_millis(100), fut)
+            .await
+            .expect("handle_query must return within 100ms for None resolver/auth")
+    }
+
+    #[tokio::test]
+    async fn empty_input_does_not_panic() {
+        let r = drive(&[]).await;
+        assert!(is_valid_response(&r));
+    }
+
+    #[tokio::test]
+    async fn shorter_than_header_does_not_panic() {
+        for len in [1usize, 5, 11] {
+            let buf = vec![0xABu8; len];
+            let r = drive(&buf).await;
+            assert!(is_valid_response(&r), "len {} produced invalid response", len);
+        }
+    }
+
+    #[tokio::test]
+    async fn header_only_with_zero_two_max_qdcount() {
+        for qd in [0u16, 2, 65535] {
+            let mut buf = vec![0u8; HEADER_SIZE];
+            buf[0] = 0xAA;
+            buf[1] = 0xBB;
+            buf[4..6].copy_from_slice(&qd.to_be_bytes());
+            let r = drive(&buf).await;
+            assert!(is_valid_response(&r), "qd_count {} produced invalid response", qd);
+        }
+    }
+
+    #[tokio::test]
+    async fn dangling_compression_pointer_does_not_panic() {
+        let mut buf = vec![0u8; HEADER_SIZE];
+        buf[5] = 1;
+        buf.extend_from_slice(&[0xC0, 0xC8]); // pointer to offset 200, past end
+        buf.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+        let r = drive(&buf).await;
+        assert!(is_valid_response(&r));
+    }
+
+    #[tokio::test]
+    async fn pointer_to_self_does_not_panic() {
+        let mut buf = vec![0u8; HEADER_SIZE];
+        buf[5] = 1;
+        buf.extend_from_slice(&[0xC0, HEADER_SIZE as u8]);
+        buf.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+        let r = drive(&buf).await;
+        assert!(is_valid_response(&r));
+    }
+
+    #[tokio::test]
+    async fn random_payloads_never_panic() {
+        // Deterministic LCG so the test is reproducible without an extra dep.
+        let mut state: u64 = 0xDEADBEEFCAFEBABE;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for _ in 0..100 {
+            let len = (next() as usize % 4093) + 4;
+            let mut buf = vec![0u8; len];
+            for chunk in buf.chunks_mut(4) {
+                let v = next();
+                for (i, b) in chunk.iter_mut().enumerate() {
+                    *b = (v >> (i * 8)) as u8;
+                }
+            }
+            let r = drive(&buf).await;
+            assert!(is_valid_response(&r), "random payload produced invalid response");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_qtype_does_not_panic() {
+        for qtype in [0u16, 65535, 64, 65, 100, 200, 999] {
+            let mut buf = vec![0u8; HEADER_SIZE];
+            buf[5] = 1;
+            buf.extend_from_slice(&[1, b'x', 0]);
+            buf.extend_from_slice(&qtype.to_be_bytes());
+            buf.extend_from_slice(&1u16.to_be_bytes());
+            let r = drive(&buf).await;
+            assert!(is_valid_response(&r), "qtype {} produced invalid response", qtype);
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_qclass_does_not_panic() {
+        let mut buf = vec![0u8; HEADER_SIZE];
+        buf[5] = 1;
+        buf.extend_from_slice(&[1, b'x', 0]);
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&42u16.to_be_bytes());
+        let r = drive(&buf).await;
+        assert!(is_valid_response(&r));
+    }
+
+    #[tokio::test]
+    async fn truncated_question_does_not_panic() {
+        let mut buf = vec![0u8; HEADER_SIZE];
+        buf[5] = 1;
+        buf.extend_from_slice(&[1, b'x', 0]);
+        let r = drive(&buf).await;
+        assert!(is_valid_response(&r));
+    }
 }
