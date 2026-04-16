@@ -277,6 +277,45 @@ pub(crate) fn is_valid_response(buf: &[u8]) -> bool {
     qr && matches!(rcode, 0 | 1 | 2 | 3 | 4 | 5)
 }
 
+/// Classify an error from `TcpListener::accept()` as recoverable.
+///
+/// A transient error means the listening socket itself is still healthy —
+/// a client aborted mid-handshake, the process was interrupted by a signal,
+/// or we are briefly out of file descriptors. The accept loop must continue
+/// on these, or a single probe can permanently disable TCP DNS (see #72).
+///
+/// Fatal errors (e.g. `EBADF`, `EINVAL`) indicate the listener socket is
+/// broken and the loop should surface the error to its supervisor.
+pub(crate) fn is_transient_accept_error(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    if matches!(
+        err.kind(),
+        ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::Interrupted
+            | ErrorKind::TimedOut
+    ) {
+        return true;
+    }
+    if let Some(code) = err.raw_os_error() {
+        return code == libc::ECONNABORTED
+            || code == libc::ECONNRESET
+            || code == libc::EINTR
+            || code == libc::EMFILE
+            || code == libc::ENFILE
+            || code == libc::EPROTO
+            || code == libc::ETIMEDOUT;
+    }
+    false
+}
+
+/// Per-process / per-system fd exhaustion. The accept loop should back off
+/// briefly instead of hot-spinning, since every call will fail until some
+/// existing connection closes.
+pub(crate) fn is_resource_exhaustion(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(libc::EMFILE) | Some(libc::ENFILE))
+}
+
 fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {
     let header = Header {
         id,
@@ -301,6 +340,82 @@ fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcl
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
     buf
+}
+
+#[cfg(test)]
+mod accept_error_tests {
+    //! Regression tests for #72: a single transient accept() error must not
+    //! permanently kill the TCP / DoT listener.
+
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn econnaborted_is_transient() {
+        // The exact error observed in production (FreeBSD errno 53).
+        let err = Error::from_raw_os_error(libc::ECONNABORTED);
+        assert!(is_transient_accept_error(&err));
+        assert!(!is_resource_exhaustion(&err));
+    }
+
+    #[test]
+    fn connection_reset_is_transient() {
+        let err = Error::from_raw_os_error(libc::ECONNRESET);
+        assert!(is_transient_accept_error(&err));
+    }
+
+    #[test]
+    fn interrupted_is_transient() {
+        let err = Error::from(ErrorKind::Interrupted);
+        assert!(is_transient_accept_error(&err));
+        let err_raw = Error::from_raw_os_error(libc::EINTR);
+        assert!(is_transient_accept_error(&err_raw));
+    }
+
+    #[test]
+    fn timed_out_is_transient() {
+        let err = Error::from(ErrorKind::TimedOut);
+        assert!(is_transient_accept_error(&err));
+    }
+
+    #[test]
+    fn eproto_is_transient() {
+        let err = Error::from_raw_os_error(libc::EPROTO);
+        assert!(is_transient_accept_error(&err));
+    }
+
+    #[test]
+    fn emfile_is_transient_and_exhaustion() {
+        let err = Error::from_raw_os_error(libc::EMFILE);
+        assert!(is_transient_accept_error(&err));
+        assert!(is_resource_exhaustion(&err));
+    }
+
+    #[test]
+    fn enfile_is_transient_and_exhaustion() {
+        let err = Error::from_raw_os_error(libc::ENFILE);
+        assert!(is_transient_accept_error(&err));
+        assert!(is_resource_exhaustion(&err));
+    }
+
+    #[test]
+    fn permission_denied_is_fatal() {
+        let err = Error::from(ErrorKind::PermissionDenied);
+        assert!(!is_transient_accept_error(&err));
+    }
+
+    #[test]
+    fn bad_fd_is_fatal() {
+        // EBADF indicates the listener socket itself is broken.
+        let err = Error::from_raw_os_error(libc::EBADF);
+        assert!(!is_transient_accept_error(&err));
+    }
+
+    #[test]
+    fn invalid_input_is_fatal() {
+        let err = Error::from(ErrorKind::InvalidInput);
+        assert!(!is_transient_accept_error(&err));
+    }
 }
 
 #[cfg(test)]

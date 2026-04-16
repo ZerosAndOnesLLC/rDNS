@@ -74,7 +74,17 @@ pub async fn serve(
     tracing::info!(%addr, max_connections = MAX_DOT_CONNECTIONS, "DNS-over-TLS listener bound");
 
     loop {
-        let (stream, src) = listener.accept().await?;
+        let (stream, src) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) if super::is_transient_accept_error(&e) => {
+                tracing::warn!(%addr, error = %e, "Transient accept() error; continuing");
+                if super::is_resource_exhaustion(&e) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         if !rate_limiter.check(src.ip()) {
             drop(stream);
             continue;
