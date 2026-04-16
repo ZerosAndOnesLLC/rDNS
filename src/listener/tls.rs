@@ -34,28 +34,24 @@ const DOT_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Load TLS certificate and key, returning a configured TlsAcceptor.
 pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<TlsAcceptor> {
-    use rustls_pemfile::{certs, pkcs8_private_keys};
-    use std::io::BufReader;
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-    let cert_file = std::fs::File::open(cert_path)
-        .map_err(|e| anyhow::anyhow!("Failed to open cert {}: {}", cert_path.display(), e))?;
-    let key_file = std::fs::File::open(key_path)
-        .map_err(|e| anyhow::anyhow!("Failed to open key {}: {}", key_path.display(), e))?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read cert {}: {}", cert_path.display(), e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("Failed to parse cert {}: {}", cert_path.display(), e))?;
 
-    let certs: Vec<_> = certs(&mut BufReader::new(cert_file))
-        .collect::<Result<Vec<_>, _>>()?;
+    if certs.is_empty() {
+        anyhow::bail!("No certificates found in {}", cert_path.display());
+    }
 
-    let keys: Vec<_> = pkcs8_private_keys(&mut BufReader::new(key_file))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let key = keys
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No private key found in {}", key_path.display()))?;
+    let key = PrivateKeyDer::from_pem_file(key_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read key {}: {}", key_path.display(), e))?;
 
     let config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, rustls::pki_types::PrivateKeyDer::Pkcs8(key))?;
+        .with_single_cert(certs, key)?;
 
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
