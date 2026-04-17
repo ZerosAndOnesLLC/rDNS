@@ -207,7 +207,12 @@ pub(crate) async fn handle_query(
     match Message::decode(buf) {
         Ok(query) => Message::servfail(&query).encode(),
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to parse query");
+            // DEBUG-level: every malformed UDP packet (including unsolicited
+            // noise from scanners, mis-routed traffic, and deliberate floods)
+            // lands here. WARN was a log-DoS: one attacker flooding garbage
+            // could trivially fill disks / overwhelm syslog. A well-formed
+            // FORMERR response still goes back to the sender.
+            tracing::debug!(error = %e, "Failed to parse query");
             let id = if buf.len() >= 2 {
                 u16::from_be_bytes([buf[0], buf[1]])
             } else {

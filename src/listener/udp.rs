@@ -17,6 +17,19 @@ use tokio::sync::Semaphore;
 const MAX_UDP_RECV: usize = 4096;
 const MAX_UDP_INFLIGHT: usize = 4096;
 
+/// Hard ceiling on how long a single UDP query's resolution may take before
+/// its task is cancelled and its inflight permit released. Without this,
+/// recursive resolution (which can legitimately touch multiple upstream
+/// servers with 5 s timeouts each, per level, up to `max_recursion_depth`)
+/// can hold a permit for minutes on a single slow or adversarial query. A
+/// sustained cache-miss flood (classic DNS water torture) then pins every
+/// permit and the server appears to hang even though it is alive — the
+/// symptom the "hangs after ~15 min" reports describe. 3 s is below the
+/// typical DNS stub-resolver first retry (5 s on glibc / BSD libc / dig),
+/// so a client that doesn't get an answer in this window will retry before
+/// its own deadline rather than timing out on the user.
+const UDP_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Simple DNS Response Rate Limiting (RRL).
 /// Throttles identical responses to the same source prefix.
 struct ResponseRateLimiter {
@@ -37,6 +50,22 @@ impl ResponseRateLimiter {
     /// Check if this response should be sent. Returns false if rate-limited.
     fn check(&self, src: &std::net::SocketAddr, qname_hash: u64, rcode: u8) -> bool {
         if self.limit == 0 {
+            return true;
+        }
+        // RRL defends against external amplification attacks (a spoofed source
+        // gets flooded by our replies). It must NOT throttle trusted LAN
+        // traffic: a home or office can legitimately see many devices on the
+        // same /24 resolving the same popular name (google.com, apple.com,
+        // update servers) within the same second. With the prior blanket
+        // default of 10/s, a busy household could have its own devices race
+        // each other and silently starve — exactly the symptom behind the
+        // "DNS hangs under load" reports. Skip RRL for loopback and RFC 1918 /
+        // ULA ranges; keep it for public sources where amplification matters.
+        let is_trusted = match src.ip() {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
+        };
+        if is_trusted {
             return true;
         }
         let prefix = match src.ip() {
@@ -103,7 +132,12 @@ pub async fn serve(
         rate_limiter,
         acl,
         inflight: Arc::new(Semaphore::new(MAX_UDP_INFLIGHT)),
-        rrl: ResponseRateLimiter::new(10), // 10 identical responses per /24 per second
+        // RRL defends public-facing resolvers against amplification; LAN
+        // sources are exempted inside check(). 100/s per public /24 per
+        // (qname, rcode) is still tight enough to blunt amplification while
+        // leaving legitimate remote clients unaffected — BIND and Unbound
+        // default to 0 (disabled) here, so 100 is conservative.
+        rrl: ResponseRateLimiter::new(100),
     });
 
     let num_workers = (num_cpus() / 2).clamp(2, 16);
@@ -206,15 +240,29 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
         let ctx = ctx.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let mut resp = super::handle_query(
-                &query_data,
-                &ctx.cache,
-                &ctx.resolver,
-                &ctx.auth,
-                &ctx.rpz,
-                recursion_allowed,
+            let mut resp = match tokio::time::timeout(
+                UDP_QUERY_TIMEOUT,
+                super::handle_query(
+                    &query_data,
+                    &ctx.cache,
+                    &ctx.resolver,
+                    &ctx.auth,
+                    &ctx.rpz,
+                    recursion_allowed,
+                ),
             )
-            .await;
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    // Resolution exceeded the UDP ceiling. Drop silently —
+                    // the permit releases as this task returns, the client
+                    // will retry, and we avoid pinning permits on slow or
+                    // adversarial queries.
+                    tracing::debug!("UDP query resolution timed out");
+                    return;
+                }
+            };
             if !resp.is_empty() {
                 super::truncate_udp_response(&mut resp);
                 // RRL check before sending

@@ -163,17 +163,20 @@ pub async fn iterate(
 }
 
 /// Extract IP addresses from the additional section for NS records in the authority section.
-/// Performs bailiwick checking: only accepts NS records for names at or below `query_name`,
-/// and only accepts glue records for names within the delegated zone.
+///
+/// Bailiwick rules applied:
+/// - NS records: the owner name must be a parent of (or equal to) the query name
+///   (i.e. the parent we just queried is authoritative for that zone cut).
+/// - Glue records: the owner name must match one of the NS targets we are about
+///   to follow. Sibling-domain glue is legitimate and common — the root zone,
+///   for example, answers `com.` delegations with `a.gtld-servers.net.` glue.
+///   Rejecting out-of-zone glue breaks real-world recursion from root hints.
 fn extract_referral_addresses(response: &Message, query_name: &DnsName) -> Vec<SocketAddr> {
-    // Find the delegation point from the authority section NS records.
-    // Only accept NS records whose owner name is a parent of (or equal to) the query name.
     let ns_records: Vec<(&DnsName, &DnsName)> = response
         .authority
         .iter()
         .filter_map(|rr| match &rr.rdata {
             RData::NS(ns_target) => {
-                // Bailiwick check: the NS owner must be a parent of the query name
                 if query_name.is_subdomain_of(&rr.name) {
                     Some((&rr.name, ns_target))
                 } else {
@@ -189,33 +192,22 @@ fn extract_referral_addresses(response: &Message, query_name: &DnsName) -> Vec<S
         })
         .collect();
 
-    // Determine the delegation zone (the NS owner name)
-    let delegation_zone = match ns_records.first() {
-        Some((owner, _)) => *owner,
-        None => return Vec::new(),
-    };
+    if ns_records.is_empty() {
+        return Vec::new();
+    }
 
     let ns_names: Vec<&DnsName> = ns_records.iter().map(|(_, target)| *target).collect();
 
     let mut addrs = Vec::new();
 
     for rr in &response.additional {
+        let matches_ns = ns_names.iter().any(|ns| **ns == rr.name);
+        if !matches_ns {
+            continue;
+        }
         match &rr.rdata {
-            RData::A(ip) => {
-                // Only accept glue for NS names that are within the delegation zone
-                if ns_names.iter().any(|ns| **ns == rr.name)
-                    && rr.name.is_subdomain_of(delegation_zone)
-                {
-                    addrs.push(SocketAddr::new((*ip).into(), 53));
-                }
-            }
-            RData::AAAA(ip) => {
-                if ns_names.iter().any(|ns| **ns == rr.name)
-                    && rr.name.is_subdomain_of(delegation_zone)
-                {
-                    addrs.push(SocketAddr::new((*ip).into(), 53));
-                }
-            }
+            RData::A(ip) => addrs.push(SocketAddr::new((*ip).into(), 53)),
+            RData::AAAA(ip) => addrs.push(SocketAddr::new((*ip).into(), 53)),
             _ => {}
         }
     }
@@ -428,5 +420,57 @@ mod tests {
         let other_name = DnsName::from_str("www.other.com").unwrap();
         let addrs = extract_referral_addresses(&response, &other_name);
         assert_eq!(addrs.len(), 0);
+    }
+
+    /// Regression: the root zone delegates `com.` with glue hosted under
+    /// `gtld-servers.net.`. That glue is out-of-bailiwick for `com.` but is the
+    /// standard and correct way for the root to deliver the delegation. A prior
+    /// over-strict filter rejected it and left full recursion from root hints
+    /// unable to follow any TLD referral.
+    #[test]
+    fn test_accepts_sibling_glue_in_delegation() {
+        let gtld = DnsName::from_str("a.gtld-servers.net").unwrap();
+        let response = Message {
+            header: crate::protocol::header::Header {
+                id: 1,
+                qr: true,
+                opcode: crate::protocol::opcode::Opcode::Query,
+                aa: false,
+                tc: false,
+                rd: false,
+                ra: false,
+                ad: false,
+                cd: false,
+                rcode: Rcode::NoError,
+                qd_count: 0,
+                an_count: 0,
+                ns_count: 1,
+                ar_count: 1,
+            },
+            questions: vec![],
+            answers: vec![],
+            authority: vec![ResourceRecord {
+                name: DnsName::from_str("com").unwrap(),
+                rtype: RecordType::NS,
+                rclass: RecordClass::IN,
+                ttl: 172800,
+                rdata: RData::NS(gtld.clone()),
+            }],
+            additional: vec![ResourceRecord {
+                name: gtld,
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 172800,
+                rdata: RData::A(Ipv4Addr::new(192, 5, 6, 30)),
+            }],
+        };
+
+        let query = DnsName::from_str("google.com").unwrap();
+        let addrs = extract_referral_addresses(&response, &query);
+        assert_eq!(addrs.len(), 1, "sibling glue must be accepted");
+        assert_eq!(
+            addrs[0],
+            SocketAddr::new(Ipv4Addr::new(192, 5, 6, 30).into(), 53)
+        );
     }
 }
