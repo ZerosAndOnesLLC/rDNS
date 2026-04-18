@@ -214,10 +214,20 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
 
         let recursion_allowed = ctx.acl.is_allowed(src.ip());
 
+        // EDNS / buffer-size negotiation — parsed once and reused for the
+        // fast-path fall-through and truncation.
+        let client_edns = super::parse_edns_from_query(&buf[..len]);
+        let effective_size = super::effective_udp_response_size(client_edns.as_ref());
+        let server_opt = if client_edns.is_some() {
+            Some(super::server_edns_opt())
+        } else {
+            None
+        };
+
         // Sync fast path: cache hit, auth, RPZ — no task spawn
-        if let Some(mut response) = try_handle_sync(&buf[..len], &ctx, recursion_allowed) {
+        if let Some(mut response) = try_handle_sync(&buf[..len], &ctx, recursion_allowed, client_edns.as_ref()) {
             if !response.is_empty() {
-                super::truncate_udp_response(&mut response);
+                super::truncate_udp_response(&mut response, effective_size, server_opt.as_ref());
                 // RRL check before sending
                 let qname_hash = qname_hash_from_buf(&buf[..len]);
                 let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
@@ -264,7 +274,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
                 }
             };
             if !resp.is_empty() {
-                super::truncate_udp_response(&mut resp);
+                super::truncate_udp_response(&mut resp, effective_size, server_opt.as_ref());
                 // RRL check before sending
                 let qname_hash = qname_hash_from_buf(&query_data);
                 let rcode = if resp.len() >= 4 { resp[3] & 0x0F } else { 0 };
@@ -277,9 +287,23 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
 }
 
 /// Synchronous fast path for cache hits, auth answers, RPZ blocks.
+/// BADVERS (unsupported EDNS version) is also handled here so we avoid the
+/// task-spawn cost on obviously-short responses.
 #[inline(always)]
-fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> Option<Vec<u8>> {
+fn try_handle_sync(
+    buf: &[u8],
+    ctx: &QueryContext,
+    recursion_allowed: bool,
+    client_edns: Option<&crate::protocol::edns::EdnsOpt>,
+) -> Option<Vec<u8>> {
     let (name, qtype, qclass, id, rd) = super::parse_query_fast(buf)?;
+
+    // BADVERS short-circuit — no point consulting auth / cache / resolver.
+    if let Some(opt) = client_edns {
+        if opt.is_unsupported_version() {
+            return Some(super::build_badvers_fast(id, &name, qtype, qclass));
+        }
+    }
 
     // RPZ
     if let Some(action) = ctx.rpz.check(&name) {
@@ -288,7 +312,10 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> O
             return Some(Vec::new());
         }
         if let Ok(query) = Message::decode(buf) {
-            if let Some(response) = ctx.rpz.apply_action(&action, &query) {
+            if let Some(mut response) = ctx.rpz.apply_action(&action, &query) {
+                if client_edns.is_some() {
+                    response.edns = Some(super::server_edns_opt());
+                }
                 return Some(response.encode());
             }
         }
@@ -300,6 +327,9 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> O
             AuthResult::Answer(mut response) => {
                 response.header.id = id;
                 response.header.rd = rd;
+                if client_edns.is_some() {
+                    response.edns = Some(super::server_edns_opt());
+                }
                 return Some(response.encode());
             }
             AuthResult::NotAuthoritative => {}
@@ -308,19 +338,19 @@ fn try_handle_sync(buf: &[u8], ctx: &QueryContext, recursion_allowed: bool) -> O
 
     // If recursion is not allowed, don't check cache from resolver or fall through to resolver
     if !recursion_allowed && ctx.resolver.is_some() {
-        return Some(super::build_refused_fast(id, rd, &name, qtype, qclass));
+        return Some(super::build_refused_fast(id, rd, &name, qtype, qclass, client_edns));
     }
 
     // Cache
     let key = CacheKey::new(name.clone(), qtype, qclass);
     if let Some(entry) = ctx.cache.lookup(&key) {
         return Some(super::build_cached_response_fast(
-            &entry, id, rd, &name, qtype, qclass,
+            &entry, id, rd, &name, qtype, qclass, client_edns,
         ));
     }
 
     if ctx.resolver.is_none() {
-        return Some(super::build_servfail_fast(id, rd, &name, qtype, qclass));
+        return Some(super::build_servfail_fast(id, rd, &name, qtype, qclass, client_edns));
     }
 
     None

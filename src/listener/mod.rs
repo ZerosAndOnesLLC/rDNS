@@ -7,6 +7,7 @@ pub mod udp_batch;
 use crate::auth::engine::{AuthEngine, AuthResult};
 use crate::cache::entry::CacheKey;
 use crate::cache::CacheStore;
+use crate::protocol::edns::EdnsOpt;
 use crate::protocol::header::{Header, HEADER_SIZE};
 use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
@@ -14,6 +15,122 @@ use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType};
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+
+/// UDP buffer size we advertise on outgoing OPT records. 1232 follows the
+/// DNS Flag Day 2020 recommendation — stay comfortably under the ~1500 B
+/// Ethernet MTU minus IPv6+UDP headers, which avoids IP fragmentation and
+/// its associated reliability / spoofing problems. Phase E promotes this
+/// to a config key.
+pub(crate) const DEFAULT_SERVER_UDP_PAYLOAD_SIZE: u16 = 1232;
+
+/// Floor we clamp a client-advertised EDNS payload size to. RFC 6891
+/// requires at least 512; anything smaller is almost always a buggy
+/// client, and honoring it just reintroduces the 512 B truncation
+/// problem we added EDNS to avoid.
+const MIN_EDNS_BUFFER: u16 = 512;
+
+/// Maximum UDP response size when the client did not advertise EDNS0 —
+/// RFC 1035 §2.3.4.
+const LEGACY_UDP_LIMIT: usize = 512;
+
+/// RFC 6891 §9: BADVERS is extended RCODE 16. Low 4 bits (0) go in the
+/// header rcode; high 8 bits (1) go in the OPT TTL's extended-rcode byte.
+const BADVERS_EXTENDED_RCODE_HI: u8 = 1;
+
+/// Extract the client's OPT pseudo-record from a raw DNS query, if any.
+///
+/// Walks the question and RR sections just enough to locate records in
+/// additional and picks out the first OPT. Queries in the wild nearly
+/// always have qd=1, an=ns=0, and ar∈{0,1} so the walk is short. Malformed
+/// packets yield `None` and the caller treats the query as non-EDNS — the
+/// listener's normal FORMERR / SERVFAIL paths take over if the packet is
+/// actually broken.
+pub(crate) fn parse_edns_from_query(buf: &[u8]) -> Option<EdnsOpt> {
+    if buf.len() < HEADER_SIZE {
+        return None;
+    }
+    let qd = u16::from_be_bytes([buf[4], buf[5]]);
+    let an = u16::from_be_bytes([buf[6], buf[7]]);
+    let ns = u16::from_be_bytes([buf[8], buf[9]]);
+    let ar = u16::from_be_bytes([buf[10], buf[11]]);
+    if ar == 0 {
+        return None;
+    }
+
+    let mut offset = HEADER_SIZE;
+    for _ in 0..qd {
+        let (_, consumed) = DnsName::decode(buf, offset).ok()?;
+        offset = offset.checked_add(consumed)?.checked_add(4)?; // qtype + qclass
+    }
+    for _ in 0..(an as u32 + ns as u32) {
+        let (_, consumed) = DnsName::decode(buf, offset).ok()?;
+        offset = offset.checked_add(consumed)?;
+        if offset.checked_add(10)? > buf.len() {
+            return None;
+        }
+        let rdlen = u16::from_be_bytes([buf[offset + 8], buf[offset + 9]]) as usize;
+        offset = offset.checked_add(10)?.checked_add(rdlen)?;
+    }
+    for _ in 0..ar {
+        let (_, consumed) = DnsName::decode(buf, offset).ok()?;
+        offset = offset.checked_add(consumed)?;
+        if offset.checked_add(10)? > buf.len() {
+            return None;
+        }
+        let rtype = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+        let class = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]);
+        let ttl = u32::from_be_bytes([buf[offset + 4], buf[offset + 5], buf[offset + 6], buf[offset + 7]]);
+        let rdlen = u16::from_be_bytes([buf[offset + 8], buf[offset + 9]]) as usize;
+        let rdata_start = offset + 10;
+        let rdata_end = rdata_start.checked_add(rdlen)?;
+        if rdata_end > buf.len() {
+            return None;
+        }
+        if rtype == u16::from(RecordType::OPT) {
+            return EdnsOpt::from_rr_fields(class, ttl, &buf[rdata_start..rdata_end]).ok();
+        }
+        offset = rdata_end;
+    }
+    None
+}
+
+/// Effective UDP response size for this query: honor the client's EDNS
+/// advertisement, clamped into [MIN_EDNS_BUFFER, our server policy]. No
+/// EDNS ⇒ RFC 1035 legacy 512 B ceiling.
+pub(crate) fn effective_udp_response_size(client_edns: Option<&EdnsOpt>) -> usize {
+    match client_edns {
+        Some(opt) => opt
+            .udp_payload_size
+            .max(MIN_EDNS_BUFFER)
+            .min(DEFAULT_SERVER_UDP_PAYLOAD_SIZE) as usize,
+        None => LEGACY_UDP_LIMIT,
+    }
+}
+
+/// The OPT record we attach to a response. Emitted only when the query
+/// carried OPT — RFC 6891 §6.1.1 forbids introducing an OPT the client
+/// did not ask for.
+pub(crate) fn server_edns_opt() -> EdnsOpt {
+    EdnsOpt {
+        udp_payload_size: DEFAULT_SERVER_UDP_PAYLOAD_SIZE,
+        extended_rcode: 0,
+        version: 0,
+        // We don't yet validate DNSSEC; don't claim AD/DO capability.
+        dnssec_ok: false,
+        z: 0,
+        options: Vec::new(),
+    }
+}
+
+/// Append `opt` as a pseudo-RR to `buf` and increment the header's AR count.
+/// Used by fast-path builders that produce raw wire bytes directly.
+fn append_opt_and_bump_ar(buf: &mut Vec<u8>, opt: &EdnsOpt) {
+    opt.encode_rr(buf);
+    if buf.len() >= HEADER_SIZE {
+        let ar = u16::from_be_bytes([buf[10], buf[11]]).saturating_add(1);
+        buf[10..12].copy_from_slice(&ar.to_be_bytes());
+    }
+}
 
 /// Fast-path: extract query name and type from raw wire format without full decode.
 /// Returns (name, qtype, qclass, id, rd_flag) or None if parse fails.
@@ -47,6 +164,8 @@ fn parse_query_fast(buf: &[u8]) -> Option<(DnsName, RecordType, RecordClass, u16
 }
 
 /// Build a cached response directly into wire format, avoiding full Message construction.
+/// When `client_edns` is `Some`, appends our server OPT as the final
+/// additional record and bumps ar_count accordingly (RFC 6891 §6.1.1).
 fn build_cached_response_fast(
     entry: &crate::cache::entry::CacheEntry,
     id: u16,
@@ -54,9 +173,11 @@ fn build_cached_response_fast(
     qname: &DnsName,
     qtype: RecordType,
     qclass: RecordClass,
+    client_edns: Option<&EdnsOpt>,
 ) -> Vec<u8> {
     let rcode = if entry.negative { entry.negative_rcode } else { Rcode::NoError };
     let remaining_ttl = entry.remaining_ttl();
+    let extra_ar = if client_edns.is_some() { 1 } else { 0 };
 
     let header = Header {
         id,
@@ -72,7 +193,7 @@ fn build_cached_response_fast(
         qd_count: 1,
         an_count: entry.answers.len() as u16,
         ns_count: entry.authority.len() as u16,
-        ar_count: entry.additional.len() as u16,
+        ar_count: entry.additional.len() as u16 + extra_ar,
     };
 
     // Pre-calculate approximate size
@@ -88,6 +209,10 @@ fn build_cached_response_fast(
     encode_records_with_ttl(&mut buf, &entry.answers, remaining_ttl);
     encode_records_with_ttl(&mut buf, &entry.authority, remaining_ttl);
     encode_records_with_ttl(&mut buf, &entry.additional, remaining_ttl);
+
+    if client_edns.is_some() {
+        server_edns_opt().encode_rr(&mut buf);
+    }
 
     buf
 }
@@ -115,7 +240,15 @@ fn encode_records_with_ttl(
 }
 
 /// Build a REFUSED response for clients not allowed to use recursion.
-fn build_refused_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {
+fn build_refused_fast(
+    id: u16,
+    rd: bool,
+    name: &DnsName,
+    qtype: RecordType,
+    qclass: RecordClass,
+    client_edns: Option<&EdnsOpt>,
+) -> Vec<u8> {
+    let extra_ar = if client_edns.is_some() { 1 } else { 0 };
     let header = Header {
         id,
         qr: true,
@@ -130,7 +263,7 @@ fn build_refused_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcla
         qd_count: 1,
         an_count: 0,
         ns_count: 0,
-        ar_count: 0,
+        ar_count: extra_ar,
     };
 
     let mut buf = Vec::with_capacity(64);
@@ -138,6 +271,53 @@ fn build_refused_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcla
     name.encode(&mut buf);
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
+    if client_edns.is_some() {
+        server_edns_opt().encode_rr(&mut buf);
+    }
+    buf
+}
+
+/// Build a BADVERS response (RFC 6891 §6.1.3) for a query carrying an EDNS
+/// version we do not support. Header rcode stays NoError (low 4 bits of
+/// extended rcode 16 are 0); OPT TTL carries the extended-rcode high byte
+/// = 1 and advertises our highest supported VERSION (0). The client will
+/// retry with that lower version.
+fn build_badvers_fast(
+    id: u16,
+    name: &DnsName,
+    qtype: RecordType,
+    qclass: RecordClass,
+) -> Vec<u8> {
+    let header = Header {
+        id,
+        qr: true,
+        opcode: crate::protocol::Opcode::from(0),
+        aa: false,
+        tc: false,
+        rd: false,
+        ra: false,
+        ad: false,
+        cd: false,
+        rcode: Rcode::NoError,
+        qd_count: 1,
+        an_count: 0,
+        ns_count: 0,
+        ar_count: 1,
+    };
+    let mut buf = Vec::with_capacity(64);
+    header.encode(&mut buf);
+    name.encode(&mut buf);
+    buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
+    buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
+    let opt = EdnsOpt {
+        udp_payload_size: DEFAULT_SERVER_UDP_PAYLOAD_SIZE,
+        extended_rcode: BADVERS_EXTENDED_RCODE_HI,
+        version: 0,
+        dnssec_ok: false,
+        z: 0,
+        options: Vec::new(),
+    };
+    opt.encode_rr(&mut buf);
     buf
 }
 
@@ -152,6 +332,22 @@ pub(crate) async fn handle_query(
     rpz: &RpzEngine,
     recursion_allowed: bool,
 ) -> Vec<u8> {
+    let client_edns = parse_edns_from_query(buf);
+
+    // BADVERS short-circuit (RFC 6891 §6.1.3): an EDNS version we don't
+    // implement is answered only with an OPT that advertises our highest
+    // supported version, nothing else.
+    if let Some(opt) = &client_edns {
+        if opt.is_unsupported_version() {
+            if let Some((name, qtype, qclass, id, _rd)) = parse_query_fast(buf) {
+                return build_badvers_fast(id, &name, qtype, qclass);
+            }
+            // Fall through to FORMERR if we can't even parse the question.
+        }
+    }
+
+    let client_edns_ref = client_edns.as_ref();
+
     // Fast path: parse just the question from wire format
     if let Some((name, qtype, qclass, id, rd)) = parse_query_fast(buf) {
         // RPZ check
@@ -162,7 +358,10 @@ pub(crate) async fn handle_query(
             }
             // Need full decode for RPZ response building
             if let Ok(query) = Message::decode(buf) {
-                if let Some(response) = rpz.apply_action(&action, &query) {
+                if let Some(mut response) = rpz.apply_action(&action, &query) {
+                    if client_edns.is_some() {
+                        response.edns = Some(server_edns_opt());
+                    }
                     return response.encode();
                 }
             }
@@ -174,6 +373,9 @@ pub(crate) async fn handle_query(
                 AuthResult::Answer(mut response) => {
                     response.header.id = id;
                     response.header.rd = rd;
+                    if client_edns.is_some() {
+                        response.edns = Some(server_edns_opt());
+                    }
                     return response.encode();
                 }
                 AuthResult::NotAuthoritative => {}
@@ -186,21 +388,24 @@ pub(crate) async fn handle_query(
                 let mut response = resolver.resolve(&name, qtype, qclass).await;
                 response.header.id = id;
                 response.header.rd = rd;
+                if client_edns.is_some() {
+                    response.edns = Some(server_edns_opt());
+                }
                 return response.encode();
             } else {
                 // Client wants recursion but is not allowed — return REFUSED
-                return build_refused_fast(id, rd, &name, qtype, qclass);
+                return build_refused_fast(id, rd, &name, qtype, qclass, client_edns_ref);
             }
         }
 
         // Direct cache lookup (no resolver mode)
         let key = CacheKey::new(name.clone(), qtype, qclass);
         if let Some(entry) = cache.lookup(&key) {
-            return build_cached_response_fast(&entry, id, rd, &name, qtype, qclass);
+            return build_cached_response_fast(&entry, id, rd, &name, qtype, qclass, client_edns_ref);
         }
 
         // SERVFAIL
-        return build_servfail_fast(id, rd, &name, qtype, qclass);
+        return build_servfail_fast(id, rd, &name, qtype, qclass, client_edns_ref);
     }
 
     // Slow path: full decode for malformed/multi-question queries
@@ -223,13 +428,16 @@ pub(crate) async fn handle_query(
     }
 }
 
-/// Maximum UDP response size per RFC 1035 (without EDNS0).
-const MAX_UDP_PAYLOAD: usize = 512;
-
-/// Truncate a UDP response if it exceeds MAX_UDP_PAYLOAD.
-/// Sets the TC (truncation) bit and strips answer/authority/additional sections.
-fn truncate_udp_response(response: &mut Vec<u8>) {
-    if response.len() <= MAX_UDP_PAYLOAD {
+/// Truncate a UDP response if it exceeds the effective size negotiated with
+/// the client. If `server_opt` is `Some`, an OPT is re-appended after the
+/// stripped question section so the client still learns our advertised
+/// payload size (RFC 6891 §7 recommends keeping OPT on truncated replies).
+pub(crate) fn truncate_udp_response(
+    response: &mut Vec<u8>,
+    effective_size: usize,
+    server_opt: Option<&EdnsOpt>,
+) {
+    if response.len() <= effective_size {
         return;
     }
     // Set TC bit in the header flags (byte 2, bit 1 of the high nibble)
@@ -238,12 +446,7 @@ fn truncate_udp_response(response: &mut Vec<u8>) {
 
         // Zero out answer, authority, additional counts (keep question count)
         // AN count at bytes 6-7, NS count at 8-9, AR count at 10-11
-        response[6] = 0;
-        response[7] = 0;
-        response[8] = 0;
-        response[9] = 0;
-        response[10] = 0;
-        response[11] = 0;
+        response[6..12].fill(0);
     }
     // Keep only header + question section.
     // Question section starts at byte 12 and we need to find its end.
@@ -263,6 +466,13 @@ fn truncate_udp_response(response: &mut Vec<u8>) {
     }
     pos += 4; // QTYPE (2) + QCLASS (2)
     response.truncate(pos.min(response.len()));
+
+    // Re-append our OPT if the client advertised EDNS. An OPT with no
+    // options is ~11 bytes and always fits inside the 512 B floor, so
+    // this cannot push the response back over `effective_size`.
+    if let Some(opt) = server_opt {
+        append_opt_and_bump_ar(response, opt);
+    }
 }
 
 /// Validate that a byte slice is either empty (a Drop response) or a
@@ -321,7 +531,15 @@ pub(crate) fn is_resource_exhaustion(err: &std::io::Error) -> bool {
     matches!(err.raw_os_error(), Some(libc::EMFILE) | Some(libc::ENFILE))
 }
 
-fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {
+fn build_servfail_fast(
+    id: u16,
+    rd: bool,
+    name: &DnsName,
+    qtype: RecordType,
+    qclass: RecordClass,
+    client_edns: Option<&EdnsOpt>,
+) -> Vec<u8> {
+    let extra_ar = if client_edns.is_some() { 1 } else { 0 };
     let header = Header {
         id,
         qr: true,
@@ -336,7 +554,7 @@ fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcl
         qd_count: 1,
         an_count: 0,
         ns_count: 0,
-        ar_count: 0,
+        ar_count: extra_ar,
     };
 
     let mut buf = Vec::with_capacity(64);
@@ -344,6 +562,9 @@ fn build_servfail_fast(id: u16, rd: bool, name: &DnsName, qtype: RecordType, qcl
     name.encode(&mut buf);
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
+    if client_edns.is_some() {
+        server_edns_opt().encode_rr(&mut buf);
+    }
     buf
 }
 
@@ -420,6 +641,234 @@ mod accept_error_tests {
     fn invalid_input_is_fatal() {
         let err = Error::from(ErrorKind::InvalidInput);
         assert!(!is_transient_accept_error(&err));
+    }
+}
+
+#[cfg(test)]
+mod edns_listener_tests {
+    //! Phase C: EDNS(0) buffer-size negotiation, BADVERS, OPT on responses.
+
+    use super::*;
+    use crate::protocol::edns::{EdnsOpt, EdnsOption};
+    use crate::rpz::RpzEngine;
+
+    fn build_query_with_opt(id: u16, qname: &str, opt: &EdnsOpt) -> Vec<u8> {
+        let header = Header {
+            id,
+            qr: false,
+            opcode: crate::protocol::opcode::Opcode::Query,
+            aa: false,
+            tc: false,
+            rd: true,
+            ra: false,
+            ad: false,
+            cd: false,
+            rcode: Rcode::NoError,
+            qd_count: 1,
+            an_count: 0,
+            ns_count: 0,
+            ar_count: 1,
+        };
+        let mut buf = Vec::with_capacity(64);
+        header.encode(&mut buf);
+        DnsName::from_str(qname).unwrap().encode(&mut buf);
+        buf.extend_from_slice(&u16::from(RecordType::A).to_be_bytes());
+        buf.extend_from_slice(&u16::from(RecordClass::IN).to_be_bytes());
+        opt.encode_rr(&mut buf);
+        buf
+    }
+
+    fn build_query_without_opt(id: u16, qname: &str) -> Vec<u8> {
+        let header = Header {
+            id,
+            qr: false,
+            opcode: crate::protocol::opcode::Opcode::Query,
+            aa: false,
+            tc: false,
+            rd: true,
+            ra: false,
+            ad: false,
+            cd: false,
+            rcode: Rcode::NoError,
+            qd_count: 1,
+            an_count: 0,
+            ns_count: 0,
+            ar_count: 0,
+        };
+        let mut buf = Vec::with_capacity(64);
+        header.encode(&mut buf);
+        DnsName::from_str(qname).unwrap().encode(&mut buf);
+        buf.extend_from_slice(&u16::from(RecordType::A).to_be_bytes());
+        buf.extend_from_slice(&u16::from(RecordClass::IN).to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn parse_edns_extracts_client_opt() {
+        let expected = EdnsOpt {
+            udp_payload_size: 4096,
+            extended_rcode: 0,
+            version: 0,
+            dnssec_ok: true,
+            z: 0,
+            options: vec![EdnsOption { code: 10, data: b"cookie12".to_vec() }],
+        };
+        let wire = build_query_with_opt(0xAB, "example.com", &expected);
+        let got = parse_edns_from_query(&wire).expect("must find OPT");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn parse_edns_returns_none_without_opt() {
+        let wire = build_query_without_opt(1, "example.com");
+        assert!(parse_edns_from_query(&wire).is_none());
+    }
+
+    #[test]
+    fn effective_size_honors_client_advertisement() {
+        let mut opt = EdnsOpt::default();
+        opt.udp_payload_size = 4096;
+        // Clamped to server policy of 1232.
+        assert_eq!(
+            effective_udp_response_size(Some(&opt)),
+            DEFAULT_SERVER_UDP_PAYLOAD_SIZE as usize
+        );
+
+        opt.udp_payload_size = 768;
+        assert_eq!(effective_udp_response_size(Some(&opt)), 768);
+
+        // Buggy client advertises below the 512 floor.
+        opt.udp_payload_size = 200;
+        assert_eq!(effective_udp_response_size(Some(&opt)), MIN_EDNS_BUFFER as usize);
+    }
+
+    #[test]
+    fn effective_size_falls_back_to_legacy_without_edns() {
+        assert_eq!(effective_udp_response_size(None), LEGACY_UDP_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn badvers_returned_for_unsupported_version() {
+        // EDNS version 1 — we only implement 0.
+        let opt = EdnsOpt {
+            udp_payload_size: 1232,
+            extended_rcode: 0,
+            version: 1,
+            dnssec_ok: false,
+            z: 0,
+            options: Vec::new(),
+        };
+        let wire = build_query_with_opt(0x1234, "example.com", &opt);
+
+        let cache = CacheStore::new(1000, 60, 86400, 60);
+        let rpz = RpzEngine::new();
+        let resp = handle_query(&wire, &cache, &None, &None, &rpz, true).await;
+
+        // Header id preserved
+        assert_eq!(u16::from_be_bytes([resp[0], resp[1]]), 0x1234);
+        // QR=1
+        assert!(resp[2] & 0x80 != 0);
+        // Low 4 bits of rcode = 0 (BADVERS extended-rcode is 16; low nibble is 0)
+        assert_eq!(resp[3] & 0x0F, 0);
+        // Decode to verify the OPT carries the BADVERS extended-rcode.
+        let decoded = Message::decode(&resp).unwrap();
+        let reply_opt = decoded.edns.expect("BADVERS reply must carry OPT");
+        assert_eq!(reply_opt.extended_rcode, BADVERS_EXTENDED_RCODE_HI);
+        assert_eq!(reply_opt.version, 0, "we advertise our highest supported");
+    }
+
+    #[tokio::test]
+    async fn response_includes_opt_when_client_sent_opt() {
+        // SERVFAIL path (no resolver / auth / cache entry) must still carry
+        // OPT back because the client asked in EDNS.
+        let opt = EdnsOpt {
+            udp_payload_size: 2048,
+            extended_rcode: 0,
+            version: 0,
+            dnssec_ok: false,
+            z: 0,
+            options: Vec::new(),
+        };
+        let wire = build_query_with_opt(0x55AA, "example.com", &opt);
+
+        let cache = CacheStore::new(1000, 60, 86400, 60);
+        let rpz = RpzEngine::new();
+        let resp = handle_query(&wire, &cache, &None, &None, &rpz, true).await;
+
+        let decoded = Message::decode(&resp).unwrap();
+        assert_eq!(decoded.header.rcode, Rcode::ServFail);
+        assert!(decoded.edns.is_some(), "OPT-on-query implies OPT-on-response");
+        assert_eq!(
+            decoded.edns.unwrap().udp_payload_size,
+            DEFAULT_SERVER_UDP_PAYLOAD_SIZE,
+            "server advertises its own policy, not the client's"
+        );
+    }
+
+    #[tokio::test]
+    async fn response_omits_opt_when_client_did_not_send_opt() {
+        let wire = build_query_without_opt(0x33, "example.com");
+
+        let cache = CacheStore::new(1000, 60, 86400, 60);
+        let rpz = RpzEngine::new();
+        let resp = handle_query(&wire, &cache, &None, &None, &rpz, true).await;
+
+        let decoded = Message::decode(&resp).unwrap();
+        assert!(decoded.edns.is_none(), "must not introduce OPT the client didn't ask for");
+    }
+
+    #[test]
+    fn truncate_preserves_opt_when_client_had_edns() {
+        // Build a synthetic large response: question + enough garbage answers
+        // to exceed 512 B. Truncation must strip the answers, set TC, and
+        // re-append our OPT so the client still learns the server's size.
+        let header = Header {
+            id: 1,
+            qr: true,
+            opcode: crate::protocol::opcode::Opcode::Query,
+            aa: false,
+            tc: false,
+            rd: true,
+            ra: true,
+            ad: false,
+            cd: false,
+            rcode: Rcode::NoError,
+            qd_count: 1,
+            an_count: 0,
+            ns_count: 0,
+            ar_count: 0,
+        };
+        let mut buf = Vec::new();
+        header.encode(&mut buf);
+        DnsName::from_str("example.com").unwrap().encode(&mut buf);
+        buf.extend_from_slice(&u16::from(RecordType::A).to_be_bytes());
+        buf.extend_from_slice(&u16::from(RecordClass::IN).to_be_bytes());
+        // Pad past the 512 B ceiling.
+        buf.extend(std::iter::repeat(0u8).take(600));
+
+        let server_opt = server_edns_opt();
+        truncate_udp_response(&mut buf, LEGACY_UDP_LIMIT, Some(&server_opt));
+
+        // TC set
+        assert!(buf[2] & 0x02 != 0, "TC bit must be set");
+        // Fits inside the effective size.
+        assert!(buf.len() <= LEGACY_UDP_LIMIT);
+        // Reparse — question preserved, OPT re-appended.
+        let decoded = Message::decode(&buf).unwrap();
+        assert_eq!(decoded.questions.len(), 1);
+        assert!(decoded.edns.is_some(), "OPT must survive truncation");
+    }
+
+    #[test]
+    fn truncate_is_noop_when_response_fits() {
+        let mut buf = vec![0u8; 100];
+        // Valid-enough header bytes
+        buf[0..2].copy_from_slice(&0x1234u16.to_be_bytes());
+        buf[2] = 0x80; // qr=1
+        buf[3] = 0;
+        let before = buf.clone();
+        truncate_udp_response(&mut buf, 512, None);
+        assert_eq!(buf, before, "fit = no-op");
     }
 }
 
