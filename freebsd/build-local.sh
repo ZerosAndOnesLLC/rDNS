@@ -24,8 +24,19 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # --- Install dependencies ---
+# xz is base on FreeBSD 15 (/usr/bin/xz); curl is base on 14+. Only pkg-install
+# what's actually missing so a clean build host doesn't hit "No packages
+# available to install matching 'xz'" and bail at step 1.
 echo "=== [1/5] Installing dependencies ==="
-pkg install -y curl git xz
+need_pkgs=""
+command -v git  >/dev/null 2>&1 || need_pkgs="$need_pkgs git"
+command -v curl >/dev/null 2>&1 || need_pkgs="$need_pkgs curl"
+command -v xz   >/dev/null 2>&1 || need_pkgs="$need_pkgs xz"
+if [ -n "$need_pkgs" ]; then
+    pkg install -y $need_pkgs
+else
+    echo "All required tools already present (git, curl, xz)"
+fi
 
 # `sudo` clears PATH, so even if rust is already installed under root's home
 # we won't see `cargo` on PATH unless we source cargo's env first.
