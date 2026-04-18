@@ -111,7 +111,7 @@ impl ForwarderPool {
             answers: vec![],
             authority: vec![],
             additional: vec![],
-            edns: None,
+            edns: Some(super::outbound_query_edns()),
         };
 
         let wire = msg.encode();
@@ -263,7 +263,7 @@ async fn forward_single(
         answers: vec![],
         authority: vec![],
         additional: vec![],
-        edns: None,
+        edns: Some(super::outbound_query_edns()),
     };
 
     let wire = query.encode();

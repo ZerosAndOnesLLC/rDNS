@@ -299,7 +299,7 @@ fn build_query(id: u16, name: &DnsName, rtype: RecordType) -> Message {
         answers: vec![],
         authority: vec![],
         additional: vec![],
-        edns: None,
+        edns: Some(super::outbound_query_edns()),
     }
 }
 
@@ -371,6 +371,25 @@ mod tests {
         assert!(!msg.header.rd);
         assert_eq!(msg.questions.len(), 1);
         assert_eq!(msg.questions[0].qtype, RecordType::A);
+    }
+
+    #[test]
+    fn test_build_query_includes_outbound_opt() {
+        // Phase D: outbound iterative queries must advertise EDNS so
+        // upstream servers know we can accept > 512 B responses. Without
+        // OPT, every DNSSEC-signed delegation the root hands us gets
+        // truncated and we fall back to TCP for no reason.
+        let name = DnsName::from_str("com").unwrap();
+        let msg = build_query(1, &name, RecordType::NS);
+        let opt = msg.edns.as_ref().expect("outbound query must carry OPT");
+        assert_eq!(opt.udp_payload_size, crate::resolver::OUTBOUND_UDP_PAYLOAD_SIZE);
+        assert_eq!(opt.version, 0);
+        assert!(!opt.dnssec_ok);
+
+        // Wire-level sanity: re-encode, re-decode, OPT survives.
+        let wire = msg.encode();
+        let decoded = crate::protocol::message::Message::decode(&wire).unwrap();
+        assert!(decoded.edns.is_some());
     }
 
     #[test]
