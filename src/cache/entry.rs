@@ -66,9 +66,36 @@ impl CacheEntry {
         self.original_ttl.saturating_sub(elapsed)
     }
 
-    /// Whether this entry has expired.
+    /// Whether this entry has expired (past its original TTL).
     pub fn is_expired(&self) -> bool {
         self.remaining_ttl() == 0
+    }
+
+    /// Seconds elapsed since this entry's original TTL ran out. Zero if the
+    /// entry is still fresh. Used by the serve-stale path to decide whether
+    /// an expired entry is still within the operator-configured grace
+    /// window (RFC 8767).
+    pub fn staleness_secs(&self) -> u32 {
+        let elapsed = self.inserted_at.elapsed().as_secs() as u32;
+        elapsed.saturating_sub(self.original_ttl)
+    }
+
+    /// True when the entry is expired but still within `stale_window_secs`
+    /// of its original TTL. `stale_window_secs == 0` disables serve-stale.
+    pub fn is_stale_usable(&self, stale_window_secs: u32) -> bool {
+        stale_window_secs > 0
+            && self.is_expired()
+            && self.staleness_secs() <= stale_window_secs
+    }
+
+    /// True when the entry is past `original_ttl + stale_window_secs` and
+    /// should no longer be kept, even for serve-stale. Also true whenever
+    /// the entry is simply expired and stale is disabled.
+    pub fn is_past_stale_window(&self, stale_window_secs: u32) -> bool {
+        if !self.is_expired() {
+            return false;
+        }
+        stale_window_secs == 0 || self.staleness_secs() > stale_window_secs
     }
 
     /// Get the answer records with TTLs adjusted to remaining time.
@@ -151,6 +178,48 @@ mod tests {
         let adjusted = entry.answers_with_adjusted_ttl();
         assert_eq!(adjusted.len(), 1);
         assert!(adjusted[0].ttl <= 300);
+    }
+
+    #[test]
+    fn stale_disabled_evicts_immediately_on_expiry() {
+        let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
+        let mut entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
+        // Back-date so the entry is definitely expired.
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(400);
+        assert!(entry.is_expired());
+        assert!(!entry.is_stale_usable(0));
+        assert!(entry.is_past_stale_window(0), "stale disabled: past-expiry ⇒ past window");
+    }
+
+    #[test]
+    fn stale_window_keeps_recently_expired() {
+        let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
+        let mut entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
+        // 10 seconds past expiry.
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(310);
+        assert!(entry.is_expired());
+        assert!(entry.is_stale_usable(86400));
+        assert!(!entry.is_past_stale_window(86400));
+    }
+
+    #[test]
+    fn stale_window_drops_entries_past_cap() {
+        let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
+        let mut entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
+        // Two days past expiry; cap is one day.
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(300 + 2 * 86400);
+        assert!(entry.is_expired());
+        assert!(!entry.is_stale_usable(86400));
+        assert!(entry.is_past_stale_window(86400));
+    }
+
+    #[test]
+    fn fresh_entry_never_stale() {
+        let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
+        let entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
+        assert!(!entry.is_expired());
+        assert!(!entry.is_stale_usable(86400));
+        assert!(!entry.is_past_stale_window(86400));
     }
 
     #[test]

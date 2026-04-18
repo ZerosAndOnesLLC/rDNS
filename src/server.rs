@@ -26,6 +26,14 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         cfg.cache.max_ttl,
         cfg.cache.negative_ttl,
     );
+    if cfg.cache.serve_stale {
+        cache.set_stale_window(cfg.cache.stale_max_ttl);
+        info!(
+            stale_max_ttl = cfg.cache.stale_max_ttl,
+            stale_answer_ttl = cfg.cache.stale_answer_ttl,
+            "Serve-stale enabled (RFC 8767)"
+        );
+    }
 
     // Spawn cache expiry background task (sweep every 60s)
     let _expiry_handle = cache.clone().spawn_expiry_task(Duration::from_secs(60));
@@ -47,6 +55,11 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Create DNSSEC validator
     let dnssec_validator = DnssecValidator::new(cfg.resolver.dnssec);
 
+    // Resolver uses the cache's stale-answer TTL regardless of whether
+    // serve-stale is on — if the cache has no stale entries, the resolver
+    // never reaches the stale-response builder.
+    let stale_answer_ttl = cfg.cache.stale_answer_ttl;
+
     // Create resolver (used in resolver and both modes)
     let resolver = match cfg.server.mode {
         ServerMode::Resolver | ServerMode::Both => {
@@ -57,6 +70,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     cfg.resolver.max_recursion_depth,
                     dnssec_validator,
                     cfg.resolver.qname_minimization,
+                    stale_answer_ttl,
                 ))
             } else {
                 Some(Resolver::with_forward_zones(
@@ -65,6 +79,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     cfg.resolver.max_recursion_depth,
                     dnssec_validator,
                     cfg.resolver.qname_minimization,
+                    stale_answer_ttl,
                     &cfg.resolver.forward_zones,
                 ))
             }

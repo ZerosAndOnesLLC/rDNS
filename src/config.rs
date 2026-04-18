@@ -116,6 +116,22 @@ pub struct CacheConfig {
 
     #[serde(default = "default_negative_ttl")]
     pub negative_ttl: u32,
+
+    /// Serve-stale (RFC 8767): when enabled, expired cache entries are
+    /// retained for `stale_max_ttl` seconds and returned to clients when
+    /// upstream resolution fails.
+    #[serde(default = "default_true")]
+    pub serve_stale: bool,
+
+    /// How long an expired entry remains eligible for serve-stale. RFC
+    /// 8767 suggests 1-3 days.
+    #[serde(default = "default_stale_max_ttl")]
+    pub stale_max_ttl: u32,
+
+    /// TTL sent to clients on stale answers. Small values (default 30 s,
+    /// matching RFC 8767) make clients re-query soon.
+    #[serde(default = "default_stale_answer_ttl")]
+    pub stale_answer_ttl: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -247,6 +263,12 @@ fn default_min_ttl() -> u32 {
 fn default_negative_ttl() -> u32 {
     300
 }
+fn default_stale_max_ttl() -> u32 {
+    86400 // 1 day, RFC 8767 suggests 1-3
+}
+fn default_stale_answer_ttl() -> u32 {
+    30 // RFC 8767 §5
+}
 fn default_true() -> bool {
     true
 }
@@ -294,6 +316,9 @@ impl Default for CacheConfig {
             max_ttl: default_max_ttl(),
             min_ttl: default_min_ttl(),
             negative_ttl: default_negative_ttl(),
+            serve_stale: true,
+            stale_max_ttl: default_stale_max_ttl(),
+            stale_answer_ttl: default_stale_answer_ttl(),
         }
     }
 }

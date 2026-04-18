@@ -34,6 +34,10 @@ struct ResolverInner {
     query_timeout: Duration,
     dnssec_validator: DnssecValidator,
     qname_minimization: bool,
+    /// TTL sent to clients when we return a stale answer (RFC 8767 §5
+    /// recommends a small value — default 30 s — so clients re-query
+    /// soon and pick up fresh data once upstream recovers).
+    stale_answer_ttl: u32,
     /// Lazily initialized forwarder pool (one per first forwarder)
     forwarder_pool: OnceCell<ForwarderPool>,
     /// Per-domain forwarding rules (longest suffix match wins).
@@ -47,6 +51,7 @@ impl Resolver {
         max_depth: u8,
         dnssec_validator: DnssecValidator,
         qname_minimization: bool,
+        stale_answer_ttl: u32,
     ) -> Self {
         Self {
             inner: Arc::new(ResolverInner {
@@ -57,6 +62,7 @@ impl Resolver {
                 query_timeout: Duration::from_secs(5),
                 dnssec_validator,
                 qname_minimization,
+                stale_answer_ttl,
                 forwarder_pool: OnceCell::new(),
                 forward_zones: Vec::new(),
             }),
@@ -70,6 +76,7 @@ impl Resolver {
         max_depth: u8,
         dnssec_validator: DnssecValidator,
         qname_minimization: bool,
+        stale_answer_ttl: u32,
         zones: &[ForwardZoneConfig],
     ) -> Self {
         let forward_zones: Vec<ForwardZone> = zones
@@ -110,6 +117,7 @@ impl Resolver {
                 query_timeout: Duration::from_secs(5),
                 dnssec_validator,
                 qname_minimization,
+                stale_answer_ttl,
                 forwarder_pool: OnceCell::new(),
                 forward_zones,
             }),
@@ -186,6 +194,19 @@ impl Resolver {
                 response
             }
             Err(e) => {
+                // Serve-stale fallback (RFC 8767). Only activates if the
+                // cache has a non-zero stale window — `lookup_stale`
+                // returns None otherwise.
+                if let Some(stale) = self.inner.cache.lookup_stale(&key) {
+                    tracing::info!(
+                        name = %name,
+                        rtype = %rtype,
+                        error = %e,
+                        staleness_secs = stale.staleness_secs(),
+                        "Upstream failed; serving stale answer"
+                    );
+                    return self.build_stale_response(name, rtype, rclass, &stale);
+                }
                 tracing::warn!(name = %name, rtype = %rtype, error = %e, "Resolution failed");
                 self.build_servfail(name, rtype, rclass)
             }
@@ -399,6 +420,68 @@ impl Resolver {
         }
     }
 
+    /// Build a response from a stale cache entry (RFC 8767). Same shape as
+    /// `build_cached_response` but every record's TTL is clamped to the
+    /// configured stale-answer TTL so clients re-query quickly once upstream
+    /// recovers instead of latching the stale data for its original TTL.
+    fn build_stale_response(
+        &self,
+        name: &DnsName,
+        rtype: RecordType,
+        rclass: RecordClass,
+        entry: &CacheEntry,
+    ) -> Message {
+        use crate::protocol::header::Header;
+        use crate::protocol::opcode::Opcode;
+        use crate::protocol::record::{Question, ResourceRecord};
+
+        let stale_ttl = self.inner.stale_answer_ttl;
+        let with_stale_ttl = |records: &[ResourceRecord]| -> Vec<ResourceRecord> {
+            records
+                .iter()
+                .map(|rr| ResourceRecord {
+                    name: rr.name.clone(),
+                    rtype: rr.rtype,
+                    rclass: rr.rclass,
+                    ttl: stale_ttl,
+                    rdata: rr.rdata.clone(),
+                })
+                .collect()
+        };
+
+        Message {
+            header: Header {
+                id: 0,
+                qr: true,
+                opcode: Opcode::Query,
+                aa: false,
+                tc: false,
+                rd: true,
+                ra: true,
+                ad: false,
+                cd: false,
+                rcode: if entry.negative {
+                    entry.negative_rcode
+                } else {
+                    Rcode::NoError
+                },
+                qd_count: 1,
+                an_count: entry.answers.len() as u16,
+                ns_count: entry.authority.len() as u16,
+                ar_count: entry.additional.len() as u16,
+            },
+            questions: vec![Question {
+                name: name.clone(),
+                qtype: rtype,
+                qclass: rclass,
+            }],
+            answers: with_stale_ttl(&entry.answers),
+            authority: with_stale_ttl(&entry.authority),
+            additional: with_stale_ttl(&entry.additional),
+            edns: None,
+        }
+    }
+
     fn build_servfail(
         &self,
         name: &DnsName,
@@ -460,7 +543,7 @@ mod tests {
     fn test_resolver_creation() {
         let cache = CacheStore::new(1000, 60, 86400, 300);
         let validator = DnssecValidator::new(true);
-        let resolver = Resolver::new(cache, vec![], 30, validator, true);
+        let resolver = Resolver::new(cache, vec![], 30, validator, true, 30);
         assert!(resolver.inner.forwarders.is_empty());
         assert_eq!(resolver.inner.root_hints.len(), 13);
     }
@@ -481,7 +564,7 @@ mod tests {
 
         let cache = CacheStore::new(1000, 60, 86400, 300);
         let validator = DnssecValidator::new(false);
-        let resolver = Resolver::new(cache.clone(), vec![], 30, validator, true);
+        let resolver = Resolver::new(cache.clone(), vec![], 30, validator, true, 30);
 
         let qname = DnsName::from_str("pkg.freebsd.org").unwrap();
         let target = DnsName::from_str("pkgmir.geo.freebsd.org").unwrap();

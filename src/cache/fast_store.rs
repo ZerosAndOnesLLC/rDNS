@@ -2,7 +2,7 @@ use super::entry::{CacheEntry, CacheKey};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +22,10 @@ struct FastCacheInner {
     min_ttl: u32,
     max_ttl: u32,
     negative_ttl: u32,
+    /// Seconds past expiry that expired entries remain eligible for
+    /// serve-stale (RFC 8767). Zero ⇒ feature disabled; entries evicted
+    /// at expiry like a non-serve-stale cache.
+    stale_window_secs: AtomicU32,
     hits: AtomicU64,
     misses: AtomicU64,
     insertions: AtomicU64,
@@ -42,12 +46,26 @@ impl FastCacheStore {
                 min_ttl,
                 max_ttl,
                 negative_ttl,
+                stale_window_secs: AtomicU32::new(0),
                 hits: AtomicU64::new(0),
                 misses: AtomicU64::new(0),
                 insertions: AtomicU64::new(0),
                 evictions: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Configure serve-stale (RFC 8767) grace window. Expired entries
+    /// remain in the cache and are returned by [`lookup_stale`] for up to
+    /// this many seconds past their original TTL. `0` disables the
+    /// feature; eviction then runs exactly at expiry.
+    pub fn set_stale_window(&self, secs: u32) {
+        self.inner.stale_window_secs.store(secs, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn stale_window(&self) -> u32 {
+        self.inner.stale_window_secs.load(Ordering::Relaxed)
     }
 
     #[inline]
@@ -57,10 +75,19 @@ impl FastCacheStore {
         hasher.finish() as usize & (NUM_SHARDS - 1)
     }
 
-    /// Look up a cache entry. Uses read lock for maximum concurrency.
-    /// Returns None if not found or expired.
+    /// Look up a fresh cache entry. Uses read lock for maximum concurrency.
+    /// Returns `None` if not found or expired. Expired entries are not
+    /// returned here even if they're still inside the serve-stale window —
+    /// serve-stale is deliberately a resolver-level fallback, never a
+    /// fast-path shortcut that skips a fresh resolution attempt.
+    ///
+    /// When serve-stale is disabled (`stale_window_secs == 0`) an expired
+    /// entry found here is opportunistically removed to keep the cache
+    /// clean. When enabled, we leave the entry in place so `lookup_stale`
+    /// can find it after the fresh attempt fails.
     pub fn lookup(&self, key: &CacheKey) -> Option<CacheEntry> {
         let idx = Self::shard_idx(key);
+        let stale_window = self.stale_window();
 
         // Fast path: read lock only
         {
@@ -70,19 +97,49 @@ impl FastCacheStore {
                     self.inner.hits.fetch_add(1, Ordering::Relaxed);
                     return Some(entry.clone());
                 }
+                // Expired. If stale is enabled, keep the entry in place for
+                // lookup_stale; otherwise fall through to opportunistic GC.
+                if stale_window > 0 {
+                    self.inner.misses.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
             } else {
                 self.inner.misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
         }
 
-        // Expired entry — upgrade to write lock and remove
+        // Expired and serve-stale is off — remove.
         {
             let mut shard = self.inner.shards[idx].write();
             shard.remove(key);
         }
         self.inner.misses.fetch_add(1, Ordering::Relaxed);
         None
+    }
+
+    /// Serve-stale lookup (RFC 8767). Returns an entry that is expired but
+    /// still within the configured `stale_window_secs`. The resolver calls
+    /// this only after fresh resolution fails, so a successful return here
+    /// means "we tried upstream and it didn't answer; here's the last
+    /// answer we cached."
+    ///
+    /// Returns `None` when serve-stale is disabled, when the entry is
+    /// absent, when the entry is fresh (caller should have used `lookup`),
+    /// or when the entry is past the grace window.
+    pub fn lookup_stale(&self, key: &CacheKey) -> Option<CacheEntry> {
+        let stale_window = self.stale_window();
+        if stale_window == 0 {
+            return None;
+        }
+        let idx = Self::shard_idx(key);
+        let shard = self.inner.shards[idx].read();
+        let entry = shard.get(key)?;
+        if entry.is_stale_usable(stale_window) {
+            Some(entry.clone())
+        } else {
+            None
+        }
     }
 
     /// Insert a cache entry with TTL clamping and size enforcement.
@@ -102,10 +159,15 @@ impl FastCacheStore {
         {
             let mut shard = self.inner.shards[idx].write();
 
-            // Enforce max size: evict expired entries first, then random if still over
+            // Enforce max size: drop entries past the stale-serving
+            // window first, then oldest-by-insertion if still over.
+            // Under memory pressure we favor keeping recently-inserted
+            // entries over serve-stale candidates — a stale answer is
+            // still better to lose than a fresh one.
             if shard.len() >= max_per_shard {
+                let stale_window = self.stale_window();
                 let before = shard.len();
-                shard.retain(|_, e| !e.is_expired());
+                shard.retain(|_, e| !e.is_past_stale_window(stale_window));
                 let evicted = before - shard.len();
                 if evicted > 0 {
                     self.inner
@@ -168,12 +230,15 @@ impl FastCacheStore {
         }
     }
 
+    /// Evict entries that are past their stale-serving window. When
+    /// serve-stale is disabled this reduces to "evict anything expired".
     pub fn evict_expired(&self) {
+        let stale_window = self.stale_window();
         let mut evicted = 0usize;
         for shard in &self.inner.shards {
             let mut s = shard.write();
             let before = s.len();
-            s.retain(|_, entry| !entry.is_expired());
+            s.retain(|_, entry| !entry.is_past_stale_window(stale_window));
             evicted += before - s.len();
         }
         if evicted > 0 {
@@ -269,6 +334,62 @@ mod tests {
         assert_eq!(store.stats().entries, 100);
         store.flush();
         assert_eq!(store.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_stale_lookup_disabled_returns_none() {
+        let store = FastCacheStore::new(1000, 60, 86400, 300);
+        let key = make_key("example.com");
+        let mut entry = make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 60);
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(120);
+        store.insert(key.clone(), entry);
+        // stale disabled by default
+        assert!(store.lookup_stale(&key).is_none());
+    }
+
+    #[test]
+    fn test_stale_lookup_returns_expired_within_window() {
+        let store = FastCacheStore::new(1000, 60, 86400, 300);
+        store.set_stale_window(86400);
+        let key = make_key("example.com");
+        // 10 s past the clamped 60 s TTL.
+        let mut entry = make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 60);
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(70);
+        store.insert(key.clone(), entry);
+        // Fresh lookup: none.
+        assert!(store.lookup(&key).is_none());
+        // Stale lookup: entry returned.
+        let stale = store.lookup_stale(&key).expect("entry within stale window");
+        assert_eq!(stale.answers.len(), 1);
+    }
+
+    #[test]
+    fn test_stale_lookup_none_past_window() {
+        let store = FastCacheStore::new(1000, 60, 86400, 300);
+        store.set_stale_window(120); // 2 minute window
+        let key = make_key("example.com");
+        let mut entry = make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 60);
+        // 5 minutes past insertion → 4 minutes past 60 s TTL → beyond 2 min window.
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(300);
+        store.insert(key.clone(), entry);
+        assert!(store.lookup(&key).is_none());
+        assert!(store.lookup_stale(&key).is_none());
+    }
+
+    #[test]
+    fn test_lookup_does_not_evict_within_stale_window() {
+        // Regression: without the "leave-in-place when stale enabled" branch,
+        // a miss-that-found-expired would immediately delete the entry and
+        // lookup_stale would never see it.
+        let store = FastCacheStore::new(1000, 60, 86400, 300);
+        store.set_stale_window(86400);
+        let key = make_key("example.com");
+        let mut entry = make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 60);
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(120);
+        store.insert(key.clone(), entry);
+        let _ = store.lookup(&key); // fresh path — expired, must NOT delete
+        let stale = store.lookup_stale(&key);
+        assert!(stale.is_some(), "serve-stale entry must survive prior fresh lookup");
     }
 
     #[test]

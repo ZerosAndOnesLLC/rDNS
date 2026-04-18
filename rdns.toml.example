@@ -25,6 +25,12 @@ max_entries = 1_000_000
 max_ttl = 86400
 min_ttl = 60
 negative_ttl = 300
+# Serve-stale (RFC 8767): when upstream resolution fails, serve expired
+# cache entries with a short TTL instead of SERVFAIL. Recovers user-facing
+# continuity during brief upstream outages.
+serve_stale = true
+stale_max_ttl = 86400       # keep expired entries usable for this long
+stale_answer_ttl = 30       # TTL sent to clients on stale answers
 
 [resolver]
 # Empty = full recursive resolution from root hints
