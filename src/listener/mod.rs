@@ -15,6 +15,69 @@ use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType};
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Global flag driving per-query logging. Set once at startup from
+/// `[logging].query_log`. Checked on the hot path, so keep this branch
+/// predictable and allocation-free when disabled.
+static QUERY_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Optional operator-configurable ceiling on a single query's resolution.
+/// 0 = unset → listeners fall back to their per-transport defaults. Set
+/// once at startup; read once per query via `Ordering::Relaxed` — cheaper
+/// than reloading config on every packet.
+static QUERY_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_query_log_enabled(enabled: bool) {
+    QUERY_LOG_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn set_query_timeout_ms(ms: u64) {
+    QUERY_TIMEOUT_MS.store(ms, Ordering::Relaxed);
+}
+
+/// Resolve the effective query timeout for a listener, honoring the
+/// operator override when set and otherwise returning the transport
+/// default. Called once per query — branch-light and allocation-free.
+#[inline]
+pub(crate) fn effective_query_timeout(default: Duration) -> Duration {
+    let override_ms = QUERY_TIMEOUT_MS.load(Ordering::Relaxed);
+    if override_ms == 0 {
+        default
+    } else {
+        Duration::from_millis(override_ms)
+    }
+}
+
+#[inline]
+fn query_log_enabled() -> bool {
+    QUERY_LOG_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Emit one INFO line per resolved query, when `[logging].query_log = true`.
+/// Extracts qname/qtype from the raw query and rcode from the first 4 bytes
+/// of the response (header flags low nibble). Silent on malformed packets —
+/// the listener's FORMERR path already logs those separately at debug.
+pub(crate) fn log_query(src: SocketAddr, query: &[u8], response: &[u8], transport: &'static str) {
+    if !query_log_enabled() {
+        return;
+    }
+    let Some((name, qtype, _qclass, _id, _rd)) = parse_query_fast(query) else {
+        return;
+    };
+    let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
+    tracing::info!(
+        target: "rdns::query",
+        %src,
+        qname = %name,
+        qtype = %qtype,
+        rcode = rcode,
+        transport = transport,
+        "query"
+    );
+}
 
 /// Maximum UDP response size when the client did not advertise EDNS0 —
 /// RFC 1035 §2.3.4.
@@ -121,7 +184,7 @@ fn append_opt_and_bump_ar(buf: &mut Vec<u8>, opt: &EdnsOpt) {
 
 /// Fast-path: extract query name and type from raw wire format without full decode.
 /// Returns (name, qtype, qclass, id, rd_flag) or None if parse fails.
-fn parse_query_fast(buf: &[u8]) -> Option<(DnsName, RecordType, RecordClass, u16, bool)> {
+pub(crate) fn parse_query_fast(buf: &[u8]) -> Option<(DnsName, RecordType, RecordClass, u16, bool)> {
     if buf.len() < HEADER_SIZE + 5 {
         return None;
     }

@@ -1,6 +1,6 @@
 [package]
 name = "rdns"
-version = "1.13.1"
+version = "1.14.0"
 edition = "2024"
 license = "MIT"
 description = "A high-performance, security-focused DNS server written in Rust"
@@ -35,6 +35,7 @@ socket2 = { version = "0.5", features = ["all"] }
 getrandom = "0.2"
 arc-swap = "1"
 serde_json = "1"
+tracing-appender = "0.2.5"
 
 [profile.release]
 lto = "fat"

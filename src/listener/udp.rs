@@ -233,6 +233,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
                 let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
                 if ctx.rrl.check(&src, qname_hash, rcode) {
                     let _ = socket.send_to(&response, src).await;
+                    super::log_query(src, &buf[..len], &response, "udp");
                 }
             }
             // Empty response = RPZ Drop — silently discard
@@ -251,7 +252,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
         tokio::spawn(async move {
             let _permit = permit;
             let mut resp = match tokio::time::timeout(
-                UDP_QUERY_TIMEOUT,
+                super::effective_query_timeout(UDP_QUERY_TIMEOUT),
                 super::handle_query(
                     &query_data,
                     &ctx.cache,
@@ -280,6 +281,7 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
                 let rcode = if resp.len() >= 4 { resp[3] & 0x0F } else { 0 };
                 if ctx.rrl.check(&src, qname_hash, rcode) {
                     let _ = socket.send_to(&resp, src).await;
+                    super::log_query(src, &query_data, &resp, "udp");
                 }
             }
         });

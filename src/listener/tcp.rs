@@ -121,7 +121,7 @@ async fn handle_connection_inner(
             }
         }
 
-        let response = match tokio::time::timeout(TCP_QUERY_TIMEOUT, super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed)).await {
+        let response = match tokio::time::timeout(super::effective_query_timeout(TCP_QUERY_TIMEOUT), super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed)).await {
             Ok(resp) => resp,
             Err(_) => {
                 tracing::debug!("TCP query resolution timed out");
@@ -144,5 +144,7 @@ async fn handle_connection_inner(
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => anyhow::bail!("TCP write timeout"),
         }
+
+        super::log_query(src, &buf, &response, "tcp");
     }
 }

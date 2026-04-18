@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,6 +153,15 @@ pub struct ResolverConfig {
     /// to zone-specific upstream servers instead of the global forwarders.
     #[serde(default)]
     pub forward_zones: Vec<ForwardZoneConfig>,
+
+    /// Wall-clock ceiling for a single client query's resolution. Applied
+    /// uniformly across UDP/TCP/DoT listeners. Zero or unset → built-in
+    /// per-transport defaults (UDP 3s, TCP/DoT 30s). Clients that time out
+    /// under this ceiling will retry — keep it shorter than the stub
+    /// resolver's first retry (5s on glibc/BSD libc) for UDP if you want
+    /// the client retry to win over the server's slow answer.
+    #[serde(default)]
+    pub query_timeout_ms: u64,
 }
 
 /// Per-domain forwarding configuration.
@@ -210,6 +220,12 @@ pub struct LoggingConfig {
 
     #[serde(default = "default_log_format")]
     pub format: LogFormat,
+
+    /// Emit one INFO line per resolved query (source, qname, qtype, rcode,
+    /// transport). Off by default — busy resolvers can produce a lot of
+    /// volume and operators should opt in.
+    #[serde(default)]
+    pub query_log: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -331,6 +347,7 @@ impl Default for ResolverConfig {
             qname_minimization: true,
             max_recursion_depth: 30,
             forward_zones: Vec::new(),
+            query_timeout_ms: 0,
         }
     }
 }
@@ -367,6 +384,7 @@ impl Default for LoggingConfig {
         Self {
             level: default_log_level(),
             format: LogFormat::Json,
+            query_log: false,
         }
     }
 }
@@ -408,21 +426,35 @@ impl Config {
     }
 }
 
-pub fn init_logging(cfg: &LoggingConfig) {
+/// Initialise the tracing subscriber with a non-blocking writer.
+///
+/// Every `info!`/`debug!` goes through a bounded MPSC channel drained by a
+/// dedicated background thread. When the channel fills, lines are dropped
+/// instead of blocking the caller — DNS response paths must never stall on
+/// log I/O. The returned `WorkerGuard` keeps the drain thread alive; it
+/// must be bound to a `main`-lifetime variable (drop = flush + shutdown).
+#[must_use = "drop the returned guard only when the process exits — losing it stops log output"]
+pub fn init_logging(cfg: &LoggingConfig) -> WorkerGuard {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&cfg.level));
+
+    let (writer, guard) = tracing_appender::non_blocking(std::io::stdout());
 
     match cfg.format {
         LogFormat::Json => {
             fmt()
                 .json()
                 .with_env_filter(filter)
+                .with_writer(writer)
                 .init();
         }
         LogFormat::Text => {
             fmt()
                 .with_env_filter(filter)
+                .with_writer(writer)
                 .init();
         }
     }
+
+    guard
 }

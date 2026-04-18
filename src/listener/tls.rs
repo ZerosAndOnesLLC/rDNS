@@ -175,7 +175,7 @@ async fn handle_tls_connection(
             }
         }
 
-        let response = match tokio::time::timeout(DOT_QUERY_TIMEOUT, super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed)).await {
+        let response = match tokio::time::timeout(super::effective_query_timeout(DOT_QUERY_TIMEOUT), super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed)).await {
             Ok(resp) => resp,
             Err(_) => {
                 tracing::debug!("DoT query resolution timed out");
@@ -198,5 +198,7 @@ async fn handle_tls_connection(
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => anyhow::bail!("DoT write timeout"),
         }
+
+        super::log_query(src, &buf, &response, "tls");
     }
 }

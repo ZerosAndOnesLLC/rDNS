@@ -38,7 +38,11 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    config::init_logging(&cfg.logging);
+    // Hold guard for process lifetime — drops only on shutdown, which
+    // flushes the async log drain thread. Never discard or shadow.
+    let _log_guard = config::init_logging(&cfg.logging);
+    listener::set_query_log_enabled(cfg.logging.query_log);
+    listener::set_query_timeout_ms(cfg.resolver.query_timeout_ms);
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
