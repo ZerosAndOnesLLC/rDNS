@@ -7,7 +7,7 @@ pub mod udp_batch;
 use crate::auth::engine::{AuthEngine, AuthResult};
 use crate::cache::entry::CacheKey;
 use crate::cache::CacheStore;
-use crate::protocol::edns::EdnsOpt;
+use crate::protocol::edns::{self, EdnsOpt, MIN_UDP_PAYLOAD_SIZE};
 use crate::protocol::header::{Header, HEADER_SIZE};
 use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
@@ -15,19 +15,6 @@ use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType};
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
-
-/// UDP buffer size we advertise on outgoing OPT records. 1232 follows the
-/// DNS Flag Day 2020 recommendation — stay comfortably under the ~1500 B
-/// Ethernet MTU minus IPv6+UDP headers, which avoids IP fragmentation and
-/// its associated reliability / spoofing problems. Phase E promotes this
-/// to a config key.
-pub(crate) const DEFAULT_SERVER_UDP_PAYLOAD_SIZE: u16 = 1232;
-
-/// Floor we clamp a client-advertised EDNS payload size to. RFC 6891
-/// requires at least 512; anything smaller is almost always a buggy
-/// client, and honoring it just reintroduces the 512 B truncation
-/// problem we added EDNS to avoid.
-const MIN_EDNS_BUFFER: u16 = 512;
 
 /// Maximum UDP response size when the client did not advertise EDNS0 —
 /// RFC 1035 §2.3.4.
@@ -95,14 +82,14 @@ pub(crate) fn parse_edns_from_query(buf: &[u8]) -> Option<EdnsOpt> {
 }
 
 /// Effective UDP response size for this query: honor the client's EDNS
-/// advertisement, clamped into [MIN_EDNS_BUFFER, our server policy]. No
-/// EDNS ⇒ RFC 1035 legacy 512 B ceiling.
+/// advertisement, clamped into [MIN_UDP_PAYLOAD_SIZE, server runtime size].
+/// No EDNS ⇒ RFC 1035 legacy 512 B ceiling.
 pub(crate) fn effective_udp_response_size(client_edns: Option<&EdnsOpt>) -> usize {
     match client_edns {
         Some(opt) => opt
             .udp_payload_size
-            .max(MIN_EDNS_BUFFER)
-            .min(DEFAULT_SERVER_UDP_PAYLOAD_SIZE) as usize,
+            .max(MIN_UDP_PAYLOAD_SIZE)
+            .min(edns::runtime().udp_payload_size) as usize,
         None => LEGACY_UDP_LIMIT,
     }
 }
@@ -112,7 +99,7 @@ pub(crate) fn effective_udp_response_size(client_edns: Option<&EdnsOpt>) -> usiz
 /// did not ask for.
 pub(crate) fn server_edns_opt() -> EdnsOpt {
     EdnsOpt {
-        udp_payload_size: DEFAULT_SERVER_UDP_PAYLOAD_SIZE,
+        udp_payload_size: edns::runtime().udp_payload_size,
         extended_rcode: 0,
         version: 0,
         // We don't yet validate DNSSEC; don't claim AD/DO capability.
@@ -310,7 +297,7 @@ fn build_badvers_fast(
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
     let opt = EdnsOpt {
-        udp_payload_size: DEFAULT_SERVER_UDP_PAYLOAD_SIZE,
+        udp_payload_size: edns::runtime().udp_payload_size,
         extended_rcode: BADVERS_EXTENDED_RCODE_HI,
         version: 0,
         dnssec_ok: false,
@@ -726,12 +713,13 @@ mod edns_listener_tests {
 
     #[test]
     fn effective_size_honors_client_advertisement() {
+        let runtime_size = edns::runtime().udp_payload_size;
         let mut opt = EdnsOpt::default();
         opt.udp_payload_size = 4096;
-        // Clamped to server policy of 1232.
+        // Clamped to the server's configured runtime size.
         assert_eq!(
             effective_udp_response_size(Some(&opt)),
-            DEFAULT_SERVER_UDP_PAYLOAD_SIZE as usize
+            runtime_size as usize
         );
 
         opt.udp_payload_size = 768;
@@ -739,7 +727,7 @@ mod edns_listener_tests {
 
         // Buggy client advertises below the 512 floor.
         opt.udp_payload_size = 200;
-        assert_eq!(effective_udp_response_size(Some(&opt)), MIN_EDNS_BUFFER as usize);
+        assert_eq!(effective_udp_response_size(Some(&opt)), MIN_UDP_PAYLOAD_SIZE as usize);
     }
 
     #[test]
@@ -800,7 +788,7 @@ mod edns_listener_tests {
         assert!(decoded.edns.is_some(), "OPT-on-query implies OPT-on-response");
         assert_eq!(
             decoded.edns.unwrap().udp_payload_size,
-            DEFAULT_SERVER_UDP_PAYLOAD_SIZE,
+            edns::runtime().udp_payload_size,
             "server advertises its own policy, not the client's"
         );
     }

@@ -1,4 +1,8 @@
-//! EDNS(0) support (RFC 6891).
+//! EDNS(0) support (RFC 6891) — wire primitives plus a process-wide
+//! runtime knob for the server's advertised UDP payload size. The runtime
+//! is initialised once at startup from [`Config`](crate::config::Config)
+//! and read from both listener (inbound responses) and resolver (outbound
+//! queries) without threading a parameter through every call site.
 //!
 //! OPT is a pseudo-RR carried in the additional section. It reuses the normal
 //! RR wire layout but repurposes the CLASS and TTL fields:
@@ -15,6 +19,56 @@
 //! We strip OPT out of the RR stream at `Message` decode time and store it as
 //! `Option<EdnsOpt>` on the message so the rest of the code can ignore the
 //! fact that these fields are overloaded.
+
+/// Hard floor that RFC 6891 requires an EDNS responder to accept.
+pub const MIN_UDP_PAYLOAD_SIZE: u16 = 512;
+
+/// Safe default advertised UDP payload size. Matches DNS Flag Day 2020 —
+/// below the typical ~1500 B Ethernet MTU after IPv6 + UDP headers, which
+/// avoids IP fragmentation (and the spoofing risks fragmentation enables).
+pub const DEFAULT_UDP_PAYLOAD_SIZE: u16 = 1232;
+
+/// Process-wide EDNS runtime settings. Single-sourced so every path —
+/// server responses, outbound recursive queries, truncation calculations —
+/// agrees on what "our UDP capacity" is.
+#[derive(Debug, Clone, Copy)]
+pub struct EdnsRuntime {
+    pub udp_payload_size: u16,
+}
+
+impl Default for EdnsRuntime {
+    fn default() -> Self {
+        Self {
+            udp_payload_size: DEFAULT_UDP_PAYLOAD_SIZE,
+        }
+    }
+}
+
+impl EdnsRuntime {
+    /// Clamp to RFC-legal bounds. Under 512 is a protocol violation;
+    /// pragmatic upper bound of 65535 (u16 max) matches OPT CLASS field.
+    pub fn from_config(udp_payload_size: u16) -> Self {
+        Self {
+            udp_payload_size: udp_payload_size.max(MIN_UDP_PAYLOAD_SIZE),
+        }
+    }
+}
+
+static RUNTIME: std::sync::OnceLock<EdnsRuntime> = std::sync::OnceLock::new();
+
+/// Install the runtime once. Subsequent calls are ignored — the runtime is
+/// only expected to be set at startup by `server::run`, and tests use the
+/// default that `runtime()` lazily installs.
+pub fn install_runtime(rt: EdnsRuntime) {
+    let _ = RUNTIME.set(rt);
+}
+
+/// Get the current runtime. Falls back to `EdnsRuntime::default()` if
+/// nothing has been installed — lets tests and CLI tools exercise the
+/// EDNS paths without having to stand up the full server.
+pub fn runtime() -> EdnsRuntime {
+    *RUNTIME.get_or_init(EdnsRuntime::default)
+}
 
 /// Well-known EDNS option codes. Only codes with a current consumer in the
 /// tree are listed; future phases add their own as they wire up typed
@@ -167,6 +221,25 @@ fn decode_options(rdata: &[u8]) -> Result<Vec<EdnsOption>, EdnsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_clamps_below_min_to_512() {
+        let rt = EdnsRuntime::from_config(200);
+        assert_eq!(rt.udp_payload_size, MIN_UDP_PAYLOAD_SIZE);
+    }
+
+    #[test]
+    fn runtime_preserves_valid_values() {
+        for &sz in &[512u16, 1232, 4096, 16384, 65535] {
+            assert_eq!(EdnsRuntime::from_config(sz).udp_payload_size, sz);
+        }
+    }
+
+    #[test]
+    fn runtime_default_matches_flag_day() {
+        assert_eq!(EdnsRuntime::default().udp_payload_size, DEFAULT_UDP_PAYLOAD_SIZE);
+        assert_eq!(DEFAULT_UDP_PAYLOAD_SIZE, 1232);
+    }
 
     #[test]
     fn default_advertises_1232() {

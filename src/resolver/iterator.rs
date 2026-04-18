@@ -382,7 +382,10 @@ mod tests {
         let name = DnsName::from_str("com").unwrap();
         let msg = build_query(1, &name, RecordType::NS);
         let opt = msg.edns.as_ref().expect("outbound query must carry OPT");
-        assert_eq!(opt.udp_payload_size, crate::resolver::OUTBOUND_UDP_PAYLOAD_SIZE);
+        assert_eq!(
+            opt.udp_payload_size,
+            crate::protocol::edns::runtime().udp_payload_size
+        );
         assert_eq!(opt.version, 0);
         assert!(!opt.dnssec_ok);
 

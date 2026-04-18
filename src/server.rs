@@ -13,6 +13,12 @@ use tokio::signal;
 use tracing::info;
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
+    // Install EDNS runtime before any listener or resolver starts — they
+    // read it lazily and the first read wins forever.
+    crate::protocol::edns::install_runtime(
+        crate::protocol::edns::EdnsRuntime::from_config(cfg.edns.udp_payload_size),
+    );
+
     // Initialize cache
     let cache = CacheStore::new(
         cfg.cache.max_entries,

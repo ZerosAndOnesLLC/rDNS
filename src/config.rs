@@ -33,6 +33,33 @@ pub struct Config {
 
     #[serde(default)]
     pub rpz: RpzConfig,
+
+    #[serde(default)]
+    pub edns: EdnsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EdnsConfig {
+    /// UDP payload size we advertise on OPT records — both on responses
+    /// (telling clients how big an answer they can send us over UDP) and on
+    /// outbound recursive queries (telling upstreams how big a response we
+    /// can receive). 1232 is the DNS Flag Day 2020 recommendation. Values
+    /// below 512 are clamped — RFC 6891 requires an EDNS responder to
+    /// accept at least 512.
+    #[serde(default = "default_edns_udp_payload_size")]
+    pub udp_payload_size: u16,
+}
+
+impl Default for EdnsConfig {
+    fn default() -> Self {
+        Self {
+            udp_payload_size: default_edns_udp_payload_size(),
+        }
+    }
+}
+
+fn default_edns_udp_payload_size() -> u16 {
+    crate::protocol::edns::DEFAULT_UDP_PAYLOAD_SIZE
 }
 
 #[derive(Debug, Clone, Deserialize)]

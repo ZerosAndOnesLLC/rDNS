@@ -64,3 +64,10 @@ format = "json"
 [security]
 sandbox = true
 rate_limit = 1000
+
+[edns]
+# UDP payload size we advertise on OPT records. 1232 follows DNS Flag Day
+# 2020 — stay comfortably under the ~1500 B Ethernet MTU minus IPv6 + UDP
+# headers to avoid IP fragmentation. Values below 512 are clamped up to
+# 512 per RFC 6891.
+udp_payload_size = 1232
