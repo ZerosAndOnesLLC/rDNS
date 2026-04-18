@@ -146,6 +146,7 @@ impl AuthEngine {
             answers,
             authority,
             additional: vec![],
+            edns: None,
         }
     }
 
@@ -181,6 +182,7 @@ impl AuthEngine {
             answers: vec![],
             authority: vec![zone.soa_record()],
             additional: vec![],
+            edns: None,
         }
     }
 
@@ -216,6 +218,7 @@ impl AuthEngine {
             answers: vec![],
             authority: vec![zone.soa_record()],
             additional: vec![],
+            edns: None,
         }
     }
 
@@ -260,6 +263,7 @@ impl AuthEngine {
             answers: vec![hinfo],
             authority: vec![zone.soa_record()],
             additional: vec![],
+            edns: None,
         }
     }
 
@@ -313,6 +317,7 @@ impl AuthEngine {
             answers: vec![],
             authority: ns_rrset.records.clone(),
             additional,
+            edns: None,
         }
     }
 }

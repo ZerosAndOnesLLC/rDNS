@@ -16,29 +16,16 @@
 //! `Option<EdnsOpt>` on the message so the rest of the code can ignore the
 //! fact that these fields are overloaded.
 
-/// Well-known EDNS option codes (RFC 6891 §6.1.2 and subsequent RFCs).
-/// We keep them as `u16` constants and leave typed parsing to per-option
-/// follow-ups.
+/// Well-known EDNS option codes. Only codes with a current consumer in the
+/// tree are listed; future phases add their own as they wire up typed
+/// parsers (TCP keepalive, padding, EDE, …). The allow is scoped to this
+/// module because the entries are referenced only in `#[cfg(test)]` today.
+#[allow(dead_code)]
 pub mod opt_code {
-    pub const LLQ: u16 = 1;
     pub const NSID: u16 = 3;
-    pub const DAU: u16 = 5;
-    pub const DHU: u16 = 6;
-    pub const N3U: u16 = 7;
     pub const CLIENT_SUBNET: u16 = 8;
-    pub const EXPIRE: u16 = 9;
     pub const COOKIE: u16 = 10;
-    pub const TCP_KEEPALIVE: u16 = 11;
-    pub const PADDING: u16 = 12;
-    pub const CHAIN: u16 = 13;
-    pub const KEY_TAG: u16 = 14;
-    pub const EXTENDED_DNS_ERROR: u16 = 15;
-    pub const CLIENT_TAG: u16 = 16;
-    pub const SERVER_TAG: u16 = 17;
 }
-
-/// Extended rcode reserved by RFC 6891 for "unsupported EDNS version".
-pub const BADVERS: u8 = 16;
 
 /// A single EDNS option — kept opaque at this layer. Typed wrappers for ECS,
 /// cookies, EDE, etc. will consume/produce these.
@@ -145,18 +132,10 @@ impl EdnsOpt {
         buf[rdlen_pos..rdlen_pos + 2].copy_from_slice(&rdata_len.to_be_bytes());
     }
 
-    /// Encode just the RDATA portion (option triples) — useful when the RR
-    /// framing is already handled by the caller.
-    pub fn encode_rdata(&self, buf: &mut Vec<u8>) {
-        for opt in &self.options {
-            buf.extend_from_slice(&opt.code.to_be_bytes());
-            let len = opt.data.len().min(u16::MAX as usize);
-            buf.extend_from_slice(&(len as u16).to_be_bytes());
-            buf.extend_from_slice(&opt.data[..len]);
-        }
-    }
-
-    /// True if this OPT requests an EDNS version we don't support.
+    /// True if this OPT requests an EDNS version we don't support. Phase C
+    /// uses this to decide when to synthesize a BADVERS response; until then
+    /// it only has a test-mode caller.
+    #[allow(dead_code)]
     pub fn is_unsupported_version(&self) -> bool {
         self.version != 0
     }

@@ -299,6 +299,7 @@ fn build_query(id: u16, name: &DnsName, rtype: RecordType) -> Message {
         answers: vec![],
         authority: vec![],
         additional: vec![],
+        edns: None,
     }
 }
 
@@ -408,6 +409,7 @@ mod tests {
                 ttl: 3600,
                 rdata: RData::A(Ipv4Addr::new(192, 0, 2, 1)),
             }],
+            edns: None,
         };
 
         // Query for www.example.com — NS at example.com is in-bailiwick
@@ -463,6 +465,7 @@ mod tests {
                 ttl: 172800,
                 rdata: RData::A(Ipv4Addr::new(192, 5, 6, 30)),
             }],
+            edns: None,
         };
 
         let query = DnsName::from_str("google.com").unwrap();

@@ -76,6 +76,7 @@ mod tests {
             answers: vec![],
             authority: vec![],
             additional: vec![],
+            edns: None,
         }
     }
 

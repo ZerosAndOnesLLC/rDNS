@@ -1,4 +1,3 @@
-#[allow(dead_code)]
 pub mod edns;
 pub mod header;
 pub mod message;

@@ -372,6 +372,7 @@ fn empty_response(query: &Message, rcode: Rcode) -> Message {
         answers: vec![],
         authority: vec![],
         additional: vec![],
+        edns: None,
     }
 }
 
@@ -397,6 +398,7 @@ fn redirect_response(query: &Message, answer: ResourceRecord) -> Message {
         answers: vec![answer],
         authority: vec![],
         additional: vec![],
+        edns: None,
     }
 }
 
@@ -567,6 +569,7 @@ safe.tracking.com CNAME rpz-passthru.
             answers: vec![],
             authority: vec![],
             additional: vec![],
+            edns: None,
         };
 
         let response = engine.apply_action(&PolicyAction::NxDomain, &query).unwrap();

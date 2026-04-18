@@ -395,6 +395,7 @@ impl Resolver {
             answers: entry.answers_with_adjusted_ttl(),
             authority: entry.authority_with_adjusted_ttl(),
             additional: entry.additional_with_adjusted_ttl(),
+            edns: None,
         }
     }
 
@@ -433,6 +434,7 @@ impl Resolver {
             answers: vec![],
             authority: vec![],
             additional: vec![],
+            edns: None,
         }
     }
 }
@@ -513,6 +515,7 @@ mod tests {
             ],
             authority: vec![],
             additional: vec![],
+            edns: None,
         };
 
         let key = CacheKey::new(qname.clone(), RecordType::A, RecordClass::IN);
