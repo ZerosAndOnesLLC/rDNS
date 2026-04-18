@@ -95,6 +95,19 @@ echo "=== [4/5] Compressing tarball (xz -9 -T0) ==="
 ( cd "$OUTPUTDIR" && sha256 -r "${STAGE_NAME}.tar.xz" > "${STAGE_NAME}.tar.xz.sha256" )
 rm -rf "$STAGE_DIR"
 
+# --- Hand the tree back to the invoking user ---
+#
+# Running `sudo sh build-local.sh` leaves target/ and any git objects touched
+# during the build owned by root. The follow-up `sh release.sh` (run as the
+# invoking user) then fails with "insufficient permission for adding an object
+# to repository database .git/objects" when it tries to create the tag. Chown
+# back to $SUDO_USER so release.sh Just Works without a manual chown step.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    SUDO_GROUP=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
+    echo "Restoring ownership of $PROJECT_ROOT to ${SUDO_USER}:${SUDO_GROUP}"
+    chown -R "${SUDO_USER}:${SUDO_GROUP}" "$PROJECT_ROOT"
+fi
+
 # --- Done ---
 echo "=== [5/5] Done ==="
 echo ""
