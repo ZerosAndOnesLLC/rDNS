@@ -42,13 +42,25 @@ echo "Artifacts:"
 ls -lh "$TARBALL" "$TARBALL_SHA"
 echo ""
 
-# --- Create git tag if it doesn't exist ---
+# --- Ensure git tag exists locally AND on origin ---
+#
+# Split the checks so an interrupted previous run (local tag created, push
+# failed) doesn't leave us stuck forever — the original logic short-circuited
+# the whole block when the local tag existed and never caught back up on the
+# push, which then tripped `gh release create` ("tag exists locally but has
+# not been pushed").
 cd "$PROJECT_ROOT"
 if git rev-parse "$TAG" >/dev/null 2>&1; then
-    echo "Tag ${TAG} already exists"
+    echo "Tag ${TAG} already exists locally"
 else
     echo "Creating tag ${TAG}..."
     git tag -a "$TAG" -m "rDNS ${VERSION}"
+fi
+
+if git ls-remote --tags --exit-code origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+    echo "Tag ${TAG} already on origin"
+else
+    echo "Pushing tag ${TAG} to origin..."
     git push origin "$TAG"
 fi
 
