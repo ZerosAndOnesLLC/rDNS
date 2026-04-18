@@ -10,39 +10,43 @@ permissions:
 jobs:
   build-freebsd-15-amd64:
     name: Build FreeBSD 15.x (amd64)
-    runs-on: [self-hosted, freebsd, "15", amd64]
+    runs-on: ubuntu-latest
     env:
       TARGET: freebsd-15-amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build (release)
-        run: cargo build --release --locked
-
-      - name: Stage artifacts
-        run: |
-          set -eu
-          TAG="${GITHUB_REF_NAME}"
-          STAGE="rdns-${TAG}-${TARGET}"
-          rm -rf "$STAGE" "${STAGE}.tar.xz" "${STAGE}.tar.xz.sha256"
-          mkdir -p "$STAGE"
-          cp target/release/rdns "$STAGE/"
-          cp target/release/rdns-control "$STAGE/"
-          cp rdns.toml.example "$STAGE/"
-          cp dist/rdns.rc "$STAGE/"
-          cp LICENSE README.md "$STAGE/"
-          tar -cJf "${STAGE}.tar.xz" "$STAGE"
-          sha256 -r "${STAGE}.tar.xz" > "${STAGE}.tar.xz.sha256"
+      - name: Build & package inside FreeBSD 15 VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          usesh: true
+          envs: "TARGET GITHUB_REF_NAME"
+          prepare: |
+            pkg install -y curl
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+          run: |
+            . "$HOME/.cargo/env"
+            cargo build --release --locked
+            STAGE="rdns-${GITHUB_REF_NAME}-${TARGET}"
+            rm -rf "$STAGE" "${STAGE}.tar.xz" "${STAGE}.tar.xz.sha256"
+            mkdir -p "$STAGE"
+            cp target/release/rdns "$STAGE/"
+            cp target/release/rdns-control "$STAGE/"
+            cp rdns.toml.example "$STAGE/"
+            cp dist/rdns.rc "$STAGE/"
+            cp LICENSE README.md "$STAGE/"
+            tar -cJf "${STAGE}.tar.xz" "$STAGE"
+            sha256 -r "${STAGE}.tar.xz" > "${STAGE}.tar.xz.sha256"
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          TAG="${GITHUB_REF_NAME}"
-          STAGE="rdns-${TAG}-${TARGET}"
-          gh release upload "$TAG" \
+          STAGE="rdns-${GITHUB_REF_NAME}-${TARGET}"
+          gh release upload "${GITHUB_REF_NAME}" \
             "${STAGE}.tar.xz" \
             "${STAGE}.tar.xz.sha256" \
             --clobber --repo "${GITHUB_REPOSITORY}"
@@ -50,7 +54,7 @@ jobs:
   prune-old-releases:
     name: Keep only the 20 most recent releases
     needs: build-freebsd-15-amd64
-    runs-on: [self-hosted, freebsd, "15", amd64]
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
