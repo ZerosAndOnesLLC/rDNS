@@ -116,9 +116,11 @@ impl Message {
         })
     }
 
-    /// Encode this message to wire format. Section counts in the emitted
-    /// header are computed from the vec lengths and the EDNS presence —
-    /// callers do not need to keep `header.*_count` in sync with `answers`,
+    /// Encode this message to wire format with RFC 1035 §4.1.4 label
+    /// compression. A fresh compression map is created per encode — never
+    /// reused across messages. Section counts in the emitted header are
+    /// computed from the vec lengths and the EDNS presence; callers do
+    /// not need to keep `header.*_count` in sync with `answers`,
     /// `authority`, `additional`, `edns`.
     pub fn encode(&self) -> Vec<u8> {
         let mut header = self.header.clone();
@@ -131,18 +133,21 @@ impl Message {
         let mut buf = Vec::with_capacity(512);
         header.encode(&mut buf);
 
+        let mut map = super::name::CompressionMap::new();
         for q in &self.questions {
-            q.encode(&mut buf);
+            q.encode_compressed(&mut buf, &mut map);
         }
         for rr in &self.answers {
-            rr.encode(&mut buf);
+            rr.encode_compressed(&mut buf, &mut map);
         }
         for rr in &self.authority {
-            rr.encode(&mut buf);
+            rr.encode_compressed(&mut buf, &mut map);
         }
         for rr in &self.additional {
-            rr.encode(&mut buf);
+            rr.encode_compressed(&mut buf, &mut map);
         }
+        // OPT is always owner-name "." with no compressible rdata — encode
+        // it directly without consulting the map.
         if let Some(opt) = &self.edns {
             opt.encode_rr(&mut buf);
         }
@@ -395,6 +400,64 @@ mod tests {
         };
         let resp_plain = Message::servfail(&plain_query);
         assert!(resp_plain.edns.is_none());
+    }
+
+    /// Regression: the LG-TV / YouTube report — `www.youtube.com` returns
+    /// a CNAME to `youtube-ui.l.google.com` plus 16 A records under that
+    /// canonical name. Without compression the encoded response was
+    /// ~700 bytes and got TC-truncated on legacy UDP. With compression
+    /// every repeat name shrinks to a 2-byte pointer, so the whole
+    /// response fits well under the RFC 1035 512-byte UDP ceiling.
+    #[test]
+    fn encode_youtube_shape_fits_in_legacy_udp() {
+        use crate::protocol::name::DnsName;
+        use crate::protocol::rdata::RData;
+        use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
+        use std::net::Ipv4Addr;
+
+        let qname = DnsName::from_str("www.youtube.com").unwrap();
+        let canonical = DnsName::from_str("youtube-ui.l.google.com").unwrap();
+
+        let mut answers = vec![ResourceRecord {
+            name: qname.clone(),
+            rtype: RecordType::CNAME,
+            rclass: RecordClass::IN,
+            ttl: 118,
+            rdata: RData::CNAME(canonical.clone()),
+        }];
+        for i in 0..16 {
+            answers.push(ResourceRecord {
+                name: canonical.clone(),
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 118,
+                rdata: RData::A(Ipv4Addr::new(142, 250, 100 + (i as u8 % 10), 1 + i as u8)),
+            });
+        }
+
+        let msg = Message {
+            header: query_header(0x1234, 1),
+            questions: vec![Question {
+                name: qname,
+                qtype: RecordType::A,
+                qclass: RecordClass::IN,
+            }],
+            answers,
+            authority: Vec::new(),
+            additional: Vec::new(),
+            edns: None,
+        };
+
+        let wire = msg.encode();
+        assert!(
+            wire.len() <= 512,
+            "compressed youtube response should fit in legacy UDP, got {} bytes",
+            wire.len()
+        );
+
+        // And round-trips cleanly through the decoder.
+        let decoded = Message::decode(&wire).unwrap();
+        assert_eq!(decoded.answers.len(), 17);
     }
 
     #[test]

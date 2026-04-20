@@ -1,4 +1,4 @@
-use super::name::DnsName;
+use super::name::{CompressionMap, DnsName};
 use super::record::RecordType;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -331,6 +331,34 @@ impl RData {
             Self::Raw { data, .. } => {
                 buf.extend_from_slice(data);
             }
+        }
+    }
+
+    /// Compression-aware encode. Names inside rdata for the types listed
+    /// in RFC 3597 §4 (NS, CNAME, PTR, MX.exchange, SOA.mname, SOA.rname)
+    /// participate in message-wide compression; everything else encodes
+    /// the same bytes as `encode`. SRV/SVCB/HTTPS target names stay
+    /// uncompressed per RFC 2782 / RFC 9460 §2.2.
+    pub fn encode_compressed(&self, buf: &mut Vec<u8>, map: &mut CompressionMap) {
+        match self {
+            Self::NS(name) | Self::CNAME(name) | Self::PTR(name) => {
+                name.encode_compressed(buf, map);
+            }
+            Self::MX { preference, exchange } => {
+                buf.extend_from_slice(&preference.to_be_bytes());
+                exchange.encode_compressed(buf, map);
+            }
+            Self::SOA(soa) => {
+                soa.mname.encode_compressed(buf, map);
+                soa.rname.encode_compressed(buf, map);
+                buf.extend_from_slice(&soa.serial.to_be_bytes());
+                buf.extend_from_slice(&soa.refresh.to_be_bytes());
+                buf.extend_from_slice(&soa.retry.to_be_bytes());
+                buf.extend_from_slice(&soa.expire.to_be_bytes());
+                buf.extend_from_slice(&soa.minimum.to_be_bytes());
+            }
+            // All other types encode identically to the non-compressed path.
+            _ => self.encode(buf),
         }
     }
 }

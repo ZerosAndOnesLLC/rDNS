@@ -1,4 +1,4 @@
-use super::name::DnsName;
+use super::name::{CompressionMap, DnsName};
 use super::rdata::RData;
 
 /// DNS record types (RFC 1035 + extensions)
@@ -180,9 +180,10 @@ impl Question {
         Ok((Self { name, qtype, qclass }, name_len + 4))
     }
 
-    /// Encode this question in wire format.
-    pub fn encode(&self, buf: &mut Vec<u8>) {
-        self.name.encode(buf);
+    /// Compression-aware encode. The question name is almost always the
+    /// first name in a response, so it both consults and seeds the map.
+    pub fn encode_compressed(&self, buf: &mut Vec<u8>, map: &mut CompressionMap) {
+        self.name.encode_compressed(buf, map);
         buf.extend_from_slice(&u16::from(self.qtype).to_be_bytes());
         buf.extend_from_slice(&u16::from(self.qclass).to_be_bytes());
     }
@@ -244,18 +245,25 @@ impl ResourceRecord {
         ))
     }
 
-    /// Encode this resource record in wire format.
-    pub fn encode(&self, buf: &mut Vec<u8>) {
-        self.name.encode(buf);
+    /// Compression-aware encode. Owner name participates in compression,
+    /// and so does rdata for types that allow it (see
+    /// `RData::encode_compressed`). Rdata is encoded directly into `buf`
+    /// so pointers inside it resolve to real positions in the final wire
+    /// image — the length prefix is patched in afterwards.
+    pub fn encode_compressed(&self, buf: &mut Vec<u8>, map: &mut CompressionMap) {
+        self.name.encode_compressed(buf, map);
         buf.extend_from_slice(&u16::from(self.rtype).to_be_bytes());
         buf.extend_from_slice(&u16::from(self.rclass).to_be_bytes());
         buf.extend_from_slice(&self.ttl.to_be_bytes());
 
-        // Encode rdata to a temp buffer to get the length
-        let mut rdata_buf = Vec::new();
-        self.rdata.encode(&mut rdata_buf);
-        let rdlen = rdata_buf.len().min(65535);
-        buf.extend_from_slice(&(rdlen as u16).to_be_bytes());
-        buf.extend_from_slice(&rdata_buf[..rdlen]);
+        // Reserve two bytes for rdlength, encode rdata in place (so any
+        // compression pointers carry correct absolute offsets), then
+        // back-patch the length.
+        let len_pos = buf.len();
+        buf.extend_from_slice(&[0, 0]);
+        let rdata_start = buf.len();
+        self.rdata.encode_compressed(buf, map);
+        let rdlen = (buf.len() - rdata_start).min(65535) as u16;
+        buf[len_pos..len_pos + 2].copy_from_slice(&rdlen.to_be_bytes());
     }
 }

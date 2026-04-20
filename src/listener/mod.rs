@@ -249,17 +249,20 @@ fn build_cached_response_fast(
     // Pre-calculate approximate size
     let mut buf = Vec::with_capacity(512);
     header.encode(&mut buf);
+    let mut map = crate::protocol::name::CompressionMap::new();
 
-    // Encode question
-    qname.encode(&mut buf);
+    // Encode question (seeds the compression map with the qname).
+    qname.encode_compressed(&mut buf, &mut map);
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
 
-    // Encode answer records with adjusted TTL
-    encode_records_with_ttl(&mut buf, &entry.answers, remaining_ttl);
-    encode_records_with_ttl(&mut buf, &entry.authority, remaining_ttl);
-    encode_records_with_ttl(&mut buf, &entry.additional, remaining_ttl);
+    // Encode answer / authority / additional with adjusted TTL and
+    // compression — every name references earlier ones where possible.
+    encode_records_with_ttl(&mut buf, &mut map, &entry.answers, remaining_ttl);
+    encode_records_with_ttl(&mut buf, &mut map, &entry.authority, remaining_ttl);
+    encode_records_with_ttl(&mut buf, &mut map, &entry.additional, remaining_ttl);
 
+    // OPT is always owner-name "." with no compressible rdata.
     if client_edns.is_some() {
         server_edns_opt().encode_rr(&mut buf);
     }
@@ -267,23 +270,27 @@ fn build_cached_response_fast(
     buf
 }
 
-/// Encode resource records with an overridden TTL, directly into the buffer.
+/// Encode resource records with an overridden TTL and RFC 1035 §4.1.4
+/// label compression, directly into the buffer.
 fn encode_records_with_ttl(
     buf: &mut Vec<u8>,
+    map: &mut crate::protocol::name::CompressionMap,
     records: &[crate::protocol::record::ResourceRecord],
     ttl: u32,
 ) {
     for rr in records {
-        rr.name.encode(buf);
+        rr.name.encode_compressed(buf, map);
         buf.extend_from_slice(&u16::from(rr.rtype).to_be_bytes());
         buf.extend_from_slice(&u16::from(rr.rclass).to_be_bytes());
         buf.extend_from_slice(&ttl.to_be_bytes());
 
-        // Encode rdata with length prefix
+        // Reserve rdlength, encode rdata in place so any compression
+        // pointers inside resolve against absolute buffer offsets, then
+        // back-patch the length.
         let rdata_len_pos = buf.len();
-        buf.extend_from_slice(&[0, 0]); // placeholder for rdlength
+        buf.extend_from_slice(&[0, 0]);
         let rdata_start = buf.len();
-        rr.rdata.encode(buf);
+        rr.rdata.encode_compressed(buf, map);
         let rdata_len = (buf.len() - rdata_start) as u16;
         buf[rdata_len_pos..rdata_len_pos + 2].copy_from_slice(&rdata_len.to_be_bytes());
     }
