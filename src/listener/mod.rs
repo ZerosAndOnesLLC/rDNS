@@ -513,39 +513,116 @@ pub(crate) fn truncate_udp_response(
     if response.len() <= effective_size {
         return;
     }
-    // Set TC bit in the header flags (byte 2, bit 1 of the high nibble)
-    if response.len() >= HEADER_SIZE {
-        response[2] |= 0x02; // TC bit is bit 9 of flags = byte 2, bit 1
-
-        // Zero out answer, authority, additional counts (keep question count)
-        // AN count at bytes 6-7, NS count at 8-9, AR count at 10-11
-        response[6..12].fill(0);
+    if response.len() < HEADER_SIZE {
+        return;
     }
-    // Keep only header + question section.
-    // Question section starts at byte 12 and we need to find its end.
-    let mut pos = HEADER_SIZE;
-    // Walk the question name labels
-    while pos < response.len() {
-        let len = response[pos] as usize;
-        if len == 0 {
-            pos += 1; // root label
-            break;
-        }
-        if len & 0xC0 == 0xC0 {
-            pos += 2; // compression pointer
-            break;
-        }
-        pos += 1 + len;
-    }
-    pos += 4; // QTYPE (2) + QCLASS (2)
-    response.truncate(pos.min(response.len()));
 
-    // Re-append our OPT if the client advertised EDNS. An OPT with no
-    // options is ~11 bytes and always fits inside the 512 B floor, so
-    // this cannot push the response back over `effective_size`.
+    // Reserve the bytes an OPT will consume if we're going to re-append
+    // one — a minimal OPT is 11 bytes (root name + type + class + ttl +
+    // rdlength + empty rdata).
+    const MIN_OPT_SIZE: usize = 11;
+    let reserved_opt = if server_opt.is_some() { MIN_OPT_SIZE } else { 0 };
+    let budget = effective_size.saturating_sub(reserved_opt);
+
+    // Parse section counts from the current header.
+    let qd = u16::from_be_bytes([response[4], response[5]]) as usize;
+    let an_count = u16::from_be_bytes([response[6], response[7]]) as usize;
+
+    // Walk past all questions to find where the answer section starts.
+    // The walker handles name labels + compression pointers; any parse
+    // error falls back to the empty-truncation path below.
+    let after_questions: Option<usize> = (|| {
+        let mut pos = HEADER_SIZE;
+        for _ in 0..qd {
+            pos = skip_name_wire(response, pos)?;
+            if pos.checked_add(4)? > response.len() {
+                return None;
+            }
+            pos += 4; // QTYPE + QCLASS
+        }
+        Some(pos)
+    })();
+
+    // Walk answer RRs, tracking the largest prefix that fits inside
+    // `budget`. Stop as soon as one RR overshoots.
+    let mut kept_answers = 0usize;
+    let mut kept_end = after_questions.unwrap_or(HEADER_SIZE);
+
+    if let Some(mut pos) = after_questions {
+        for _ in 0..an_count {
+            let Some(next) = skip_rr_wire(response, pos) else {
+                break;
+            };
+            if next > budget {
+                break;
+            }
+            pos = next;
+            kept_end = next;
+            kept_answers += 1;
+        }
+    }
+
+    // Set TC, update header counts, drop authority + additional + any
+    // trailing answer bytes that didn't fit.
+    response[2] |= 0x02;
+    response[6..8].copy_from_slice(&(kept_answers as u16).to_be_bytes());
+    response[8..12].fill(0); // NS and AR counts
+    response.truncate(kept_end);
+
+    // Re-append OPT last so its AR-count bump applies on top of the
+    // zeroed counts above. A minimal OPT is 11 bytes and we reserved
+    // its space above, so this never pushes us back over budget.
     if let Some(opt) = server_opt {
         append_opt_and_bump_ar(response, opt);
     }
+}
+
+/// Skip one wire-format DNS name starting at `pos` in `buf`. Returns the
+/// position just past the end of the name, or `None` if the wire bytes
+/// are malformed. Handles both label sequences and 14-bit compression
+/// pointers; a pointer always ends the name (2 bytes total).
+fn skip_name_wire(buf: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        if pos >= buf.len() {
+            return None;
+        }
+        let len = buf[pos];
+        if len == 0 {
+            return Some(pos + 1);
+        }
+        if len & 0xC0 == 0xC0 {
+            // Compression pointer: always 2 bytes regardless of target.
+            if pos + 2 > buf.len() {
+                return None;
+            }
+            return Some(pos + 2);
+        }
+        if len & 0xC0 != 0 {
+            // Reserved label type — malformed.
+            return None;
+        }
+        let label_len = len as usize;
+        pos = pos.checked_add(1)?.checked_add(label_len)?;
+        if pos > buf.len() {
+            return None;
+        }
+    }
+}
+
+/// Skip one wire-format resource record starting at `pos`. Returns the
+/// position just past RDATA, or `None` on malformed input.
+fn skip_rr_wire(buf: &[u8], pos: usize) -> Option<usize> {
+    let after_name = skip_name_wire(buf, pos)?;
+    // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2) = 10 bytes
+    if after_name.checked_add(10)? > buf.len() {
+        return None;
+    }
+    let rdlen = u16::from_be_bytes([buf[after_name + 8], buf[after_name + 9]]) as usize;
+    let end = after_name.checked_add(10)?.checked_add(rdlen)?;
+    if end > buf.len() {
+        return None;
+    }
+    Some(end)
 }
 
 /// Validate that a byte slice is either empty (a Drop response) or a
@@ -943,6 +1020,114 @@ mod edns_listener_tests {
         let before = buf.clone();
         truncate_udp_response(&mut buf, 512, None);
         assert_eq!(buf, before, "fit = no-op");
+    }
+
+    /// Build a real 20-A-record response for `example.com`, cap it at
+    /// 256 B (well below the natural size), and verify the truncator
+    /// keeps as many answers as fit instead of emitting an empty
+    /// header+question+TC. The LG-TV regression was exactly this case:
+    /// legacy stubs that don't cleanly retry over TCP need *some*
+    /// answer bytes to make progress.
+    #[test]
+    fn truncate_keeps_as_many_answers_as_fit() {
+        use crate::protocol::header::Header;
+        use crate::protocol::name::DnsName;
+        use crate::protocol::rdata::RData;
+        use crate::protocol::record::{Question, ResourceRecord};
+        use std::net::Ipv4Addr;
+
+        let qname = DnsName::from_str("example.com").unwrap();
+        let mut msg = Message {
+            header: Header {
+                id: 1, qr: true, opcode: crate::protocol::opcode::Opcode::Query,
+                aa: false, tc: false, rd: true, ra: true, ad: false, cd: false,
+                rcode: Rcode::NoError,
+                qd_count: 1, an_count: 0, ns_count: 0, ar_count: 0,
+            },
+            questions: vec![Question {
+                name: qname.clone(),
+                qtype: RecordType::A,
+                qclass: RecordClass::IN,
+            }],
+            answers: (0..20).map(|i| ResourceRecord {
+                name: qname.clone(),
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata: RData::A(Ipv4Addr::new(192, 0, 2, i + 1)),
+            }).collect(),
+            authority: Vec::new(),
+            additional: Vec::new(),
+            edns: None,
+        };
+        // Pre-truncation this response is much bigger than 256 bytes.
+        let mut wire = msg.encode();
+        assert!(wire.len() > 256, "sanity: untruncated response must exceed cap");
+        msg.header.tc = false;
+
+        truncate_udp_response(&mut wire, 256, None);
+
+        // TC bit set, fits inside the cap.
+        assert!(wire[2] & 0x02 != 0, "TC must be set");
+        assert!(wire.len() <= 256);
+
+        // Reparses cleanly: at least one answer kept, ns/ar zeroed.
+        let decoded = Message::decode(&wire).expect("truncated response must parse");
+        assert_eq!(decoded.questions.len(), 1);
+        assert!(!decoded.answers.is_empty(), "truncator must keep some answers, not empty the section");
+        assert!(decoded.authority.is_empty());
+        assert!(decoded.additional.is_empty());
+        // Every kept answer still carries its IP rdata.
+        assert!(decoded.answers.iter().all(|rr| matches!(rr.rdata, RData::A(_))));
+    }
+
+    /// Falls back to header+question+TC+OPT when even one answer RR
+    /// wouldn't fit. Verifies the legacy safety net still works for
+    /// pathological caps.
+    #[test]
+    fn truncate_falls_back_to_empty_when_no_answer_fits() {
+        use crate::protocol::header::Header;
+        use crate::protocol::name::DnsName;
+        use crate::protocol::rdata::RData;
+        use crate::protocol::record::{Question, ResourceRecord};
+        use std::net::Ipv4Addr;
+
+        let qname = DnsName::from_str("example.com").unwrap();
+        let msg = Message {
+            header: Header {
+                id: 1, qr: true, opcode: crate::protocol::opcode::Opcode::Query,
+                aa: false, tc: false, rd: true, ra: true, ad: false, cd: false,
+                rcode: Rcode::NoError,
+                qd_count: 1, an_count: 0, ns_count: 0, ar_count: 0,
+            },
+            questions: vec![Question {
+                name: qname.clone(),
+                qtype: RecordType::A,
+                qclass: RecordClass::IN,
+            }],
+            answers: vec![ResourceRecord {
+                name: qname,
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata: RData::A(Ipv4Addr::new(1, 2, 3, 4)),
+            }],
+            authority: Vec::new(),
+            additional: Vec::new(),
+            edns: None,
+        };
+        let mut wire = msg.encode();
+
+        // Cap so small that even header + question barely fits and no
+        // answer can land. Picks 40 which is header(12) + question
+        // (\x07example\x03com\x00 + 4 = 17) = 29, leaving no room for a
+        // single ~27-byte A RR.
+        truncate_udp_response(&mut wire, 40, None);
+
+        let decoded = Message::decode(&wire).expect("must parse");
+        assert!(decoded.header.tc, "TC set even when no answer fit");
+        assert_eq!(decoded.questions.len(), 1);
+        assert!(decoded.answers.is_empty());
     }
 }
 
