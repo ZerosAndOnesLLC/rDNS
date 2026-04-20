@@ -414,8 +414,14 @@ impl Resolver {
                 qclass: rclass,
             }],
             answers: entry.answers_with_adjusted_ttl(),
-            authority: entry.authority_with_adjusted_ttl(),
-            additional: entry.additional_with_adjusted_ttl(),
+            // minimal-responses: keep authority only when the client needs
+            // SOA for negative caching; drop additional unconditionally.
+            authority: if crate::listener::minimal_keep_authority(entry.negative) {
+                entry.authority_with_adjusted_ttl()
+            } else {
+                Vec::new()
+            },
+            additional: Vec::new(),
             edns: None,
         }
     }
@@ -476,8 +482,12 @@ impl Resolver {
                 qclass: rclass,
             }],
             answers: with_stale_ttl(&entry.answers),
-            authority: with_stale_ttl(&entry.authority),
-            additional: with_stale_ttl(&entry.additional),
+            authority: if crate::listener::minimal_keep_authority(entry.negative) {
+                with_stale_ttl(&entry.authority)
+            } else {
+                Vec::new()
+            },
+            additional: Vec::new(),
             edns: None,
         }
     }
@@ -608,5 +618,97 @@ mod tests {
         assert_eq!(entry.answers.len(), 2, "both CNAME and chained A must be cached");
         assert!(entry.answers.iter().any(|rr| matches!(rr.rdata, RData::A(_))),
             "chained A record must survive bailiwick filtering");
+    }
+
+    /// Cached positive answers should ship without authority/additional —
+    /// stubs never use them and carrying NS / glue fills UDP budget for
+    /// nothing.
+    #[test]
+    fn build_cached_response_drops_authority_and_additional_on_positive() {
+        use crate::cache::entry::CacheEntry;
+        use crate::protocol::rdata::RData;
+        use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
+        use std::net::Ipv4Addr;
+
+        let cache = CacheStore::new(1000, 60, 86400, 300);
+        let validator = DnssecValidator::new(false);
+        let resolver = Resolver::new(cache, vec![], 30, validator, true, 30);
+
+        let qname = DnsName::from_str("www.example.com").unwrap();
+        let entry = CacheEntry {
+            answers: vec![ResourceRecord {
+                name: qname.clone(),
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata: RData::A(Ipv4Addr::new(93, 184, 216, 34)),
+            }],
+            authority: vec![ResourceRecord {
+                name: DnsName::from_str("example.com").unwrap(),
+                rtype: RecordType::NS,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata: RData::NS(DnsName::from_str("ns.example.com").unwrap()),
+            }],
+            additional: vec![ResourceRecord {
+                name: DnsName::from_str("ns.example.com").unwrap(),
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata: RData::A(Ipv4Addr::new(1, 2, 3, 4)),
+            }],
+            negative: false,
+            negative_rcode: Rcode::NoError,
+            original_ttl: 300,
+            inserted_at: std::time::Instant::now(),
+            hit_count: 0,
+        };
+
+        let msg = resolver.build_cached_response(&qname, RecordType::A, RecordClass::IN, &entry);
+        assert_eq!(msg.answers.len(), 1);
+        assert!(msg.authority.is_empty(), "positive response must drop authority");
+        assert!(msg.additional.is_empty(), "positive response must drop additional");
+    }
+
+    /// Negative cached responses need the SOA in authority so downstream
+    /// stubs can do negative caching per RFC 2308. Additional still gets
+    /// dropped.
+    #[test]
+    fn build_cached_response_keeps_authority_on_negative() {
+        use crate::cache::entry::CacheEntry;
+        use crate::protocol::rdata::{RData, SoaData};
+        use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
+
+        let cache = CacheStore::new(1000, 60, 86400, 300);
+        let validator = DnssecValidator::new(false);
+        let resolver = Resolver::new(cache, vec![], 30, validator, true, 30);
+
+        let qname = DnsName::from_str("nope.example.com").unwrap();
+        let entry = CacheEntry {
+            answers: vec![],
+            authority: vec![ResourceRecord {
+                name: DnsName::from_str("example.com").unwrap(),
+                rtype: RecordType::SOA,
+                rclass: RecordClass::IN,
+                ttl: 300,
+                rdata: RData::SOA(SoaData {
+                    mname: DnsName::from_str("ns.example.com").unwrap(),
+                    rname: DnsName::from_str("admin.example.com").unwrap(),
+                    serial: 1, refresh: 3600, retry: 900, expire: 604800, minimum: 300,
+                }),
+            }],
+            additional: vec![],
+            negative: true,
+            negative_rcode: Rcode::NxDomain,
+            original_ttl: 300,
+            inserted_at: std::time::Instant::now(),
+            hit_count: 0,
+        };
+
+        let msg = resolver.build_cached_response(&qname, RecordType::A, RecordClass::IN, &entry);
+        assert!(msg.answers.is_empty());
+        assert_eq!(msg.authority.len(), 1, "negative response must keep SOA for RFC 2308");
+        assert!(matches!(msg.authority[0].rdata, RData::SOA(_)));
+        assert!(msg.additional.is_empty());
     }
 }

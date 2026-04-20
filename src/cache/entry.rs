@@ -129,6 +129,11 @@ impl CacheEntry {
     }
 
     /// Get the additional records with TTLs adjusted to remaining time.
+    ///
+    /// Currently unused — minimal-responses (RFC-ish: Unbound default)
+    /// strips the additional section before sending. Kept symmetric with
+    /// its siblings so flipping the policy off remains a one-line change.
+    #[allow(dead_code)]
     pub fn additional_with_adjusted_ttl(&self) -> Vec<ResourceRecord> {
         let remaining = self.remaining_ttl();
         self.additional

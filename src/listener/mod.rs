@@ -83,6 +83,17 @@ pub(crate) fn log_query(src: SocketAddr, query: &[u8], response: &[u8], transpor
 /// RFC 1035 §2.3.4.
 const LEGACY_UDP_LIMIT: usize = 512;
 
+/// Apply `minimal-responses` semantics (matches Unbound's default): stub
+/// resolvers never use the authority/additional sections on positive
+/// answers, so shipping them just eats UDP budget and makes truncation
+/// more likely. Keep authority only when the client needs SOA for
+/// negative caching (RFC 2308). Drop additional unconditionally —
+/// clients that want glue can re-query for it.
+#[inline]
+pub(crate) fn minimal_keep_authority(is_negative: bool) -> bool {
+    is_negative
+}
+
 /// RFC 6891 §9: BADVERS is extended RCODE 16. Low 4 bits (0) go in the
 /// header rcode; high 8 bits (1) go in the OPT TTL's extended-rcode byte.
 const BADVERS_EXTENDED_RCODE_HI: u8 = 1;
@@ -229,6 +240,9 @@ fn build_cached_response_fast(
     let remaining_ttl = entry.remaining_ttl();
     let extra_ar = if client_edns.is_some() { 1 } else { 0 };
 
+    let keep_authority = minimal_keep_authority(entry.negative);
+    let authority_count = if keep_authority { entry.authority.len() as u16 } else { 0 };
+
     let header = Header {
         id,
         qr: true,
@@ -242,8 +256,8 @@ fn build_cached_response_fast(
         rcode,
         qd_count: 1,
         an_count: entry.answers.len() as u16,
-        ns_count: entry.authority.len() as u16,
-        ar_count: entry.additional.len() as u16 + extra_ar,
+        ns_count: authority_count,
+        ar_count: extra_ar,
     };
 
     // Pre-calculate approximate size
@@ -256,11 +270,13 @@ fn build_cached_response_fast(
     buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
     buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
 
-    // Encode answer / authority / additional with adjusted TTL and
-    // compression — every name references earlier ones where possible.
+    // Encode answer (always) + authority (only when load-bearing) with
+    // adjusted TTL and compression. Additional is dropped per
+    // minimal-responses — clients re-query for glue if they need it.
     encode_records_with_ttl(&mut buf, &mut map, &entry.answers, remaining_ttl);
-    encode_records_with_ttl(&mut buf, &mut map, &entry.authority, remaining_ttl);
-    encode_records_with_ttl(&mut buf, &mut map, &entry.additional, remaining_ttl);
+    if keep_authority {
+        encode_records_with_ttl(&mut buf, &mut map, &entry.authority, remaining_ttl);
+    }
 
     // OPT is always owner-name "." with no compressible rdata.
     if client_edns.is_some() {
