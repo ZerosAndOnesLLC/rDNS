@@ -10,6 +10,8 @@ mod security;
 mod protocol;
 mod resolver;
 mod server;
+#[cfg(unix)]
+mod single_instance;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -37,6 +39,16 @@ async fn main() -> anyhow::Result<()> {
         println!("Configuration OK");
         return Ok(());
     }
+
+    // Refuse to start if another rdns instance already holds the lock.
+    #[cfg(unix)]
+    let _instance_lock = match single_instance::acquire("rdns") {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("rdns: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Hold guard for process lifetime — drops only on shutdown, which
     // flushes the async log drain thread. Never discard or shadow.
