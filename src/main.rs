@@ -40,13 +40,19 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Refuse to start if another rdns instance already holds the lock.
+    // Refuse to start when another instance actually holds the lock; warn
+    // and continue when the lockfile path isn't writable, so existing
+    // appliances that haven't yet upgraded their rc.d don't get bricked.
     #[cfg(unix)]
     let _instance_lock = match single_instance::acquire("rdns") {
-        Ok(lock) => lock,
-        Err(e) => {
-            eprintln!("rdns: {e}");
+        Ok(lock) => Some(lock),
+        Err(single_instance::InstanceLockError::AlreadyRunning(pid)) => {
+            eprintln!("rdns: another instance is already running (pid {pid})");
             std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("rdns: warning: singleton lock unavailable: {e} (continuing)");
+            None
         }
     };
 
