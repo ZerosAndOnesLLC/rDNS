@@ -128,6 +128,51 @@ Client → UDP/TCP/TLS Listener → Query Router
 - Zone data held in memory, loaded from files or PostgreSQL
 - PostgreSQL LISTEN/NOTIFY for real-time zone reload
 
+## AiFw HA Integration
+
+When AiFw is deployed in active-passive cluster mode, a CARP virtual IP floats between
+nodes. LAN clients that use the AiFw box as their DNS resolver should point at the CARP
+VIP rather than a physical interface IP so that DNS resolution continues transparently
+after failover.
+
+### Bind to wildcard (recommended)
+
+rDNS's default config already uses wildcard addresses:
+
+```toml
+[listeners]
+udp = ["0.0.0.0:53", "[::]:53"]
+tcp = ["0.0.0.0:53", "[::]:53"]
+```
+
+With this configuration, rDNS on the new CARP master accepts queries arriving at the
+VIP immediately after failover — no rDNS configuration change is required.
+
+**Verify your deployment uses wildcard listeners.** If your config specifies a
+physical interface IP (e.g. `udp = ["192.168.1.1:53"]`), rDNS on the new master
+will not respond to queries directed at the CARP VIP until you update the listen
+address and reload.
+
+### Multi-address listen (if IP-specific binding is required)
+
+If you need rDNS bound to a specific interface IP and also the CARP VIP, list both:
+
+```toml
+[listeners]
+udp = ["192.168.1.1:53", "192.168.1.254:53"]   # physical + CARP VIP
+tcp = ["192.168.1.1:53", "192.168.1.254:53"]
+```
+
+rDNS iterates the list and spawns one listener task per address, so both are served
+simultaneously.
+
+### Failover behavior
+
+On CARP failover the new master's rDNS process is already running with the CARP VIP
+in its listener list (or on `0.0.0.0`). Because rDNS's cache is local to each node,
+clients may see a brief increase in resolver latency on the first query after failover
+(cache miss to upstream), then resume normal cached performance.
+
 ## License
 
 MIT
