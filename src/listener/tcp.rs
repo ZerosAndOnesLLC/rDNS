@@ -44,15 +44,21 @@ pub async fn serve(
     loop {
         let (stream, src) = match listener.accept().await {
             Ok(pair) => pair,
+            Err(e) if super::is_resource_exhaustion(&e) => {
+                tracing::warn!(%addr, error = %e, "TCP accept() failed: resource exhaustion (EMFILE/ENFILE); backing off");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
             Err(e) if super::is_transient_accept_error(&e) => {
-                tracing::warn!(%addr, error = %e, "Transient accept() error; continuing");
-                if super::is_resource_exhaustion(&e) {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
+                // Peer aborted before accept(); kernel discards the queued
+                // sockaddr, so source IP is unrecoverable here. Use tcpdump
+                // on the listening interface if you need to identify the client.
+                tracing::debug!(%addr, error = %e, "TCP accept() aborted before peer address available (peer RST mid-handshake)");
                 continue;
             }
             Err(e) => return Err(e.into()),
         };
+        tracing::debug!(%src, "TCP connection accepted");
         if !rate_limiter.check(src.ip()) {
             drop(stream);
             continue;
