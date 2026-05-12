@@ -1,6 +1,12 @@
 # rDNS
 
-A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering.
+[![Latest release](https://img.shields.io/github/v/release/ZerosAndOnesLLC/rDNS?label=release&color=blue)](https://github.com/ZerosAndOnesLLC/rDNS/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-ce4218?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20FreeBSD%20%7C%20macOS-informational)](#deployment)
+[![Performance](https://img.shields.io/badge/perf-437K%20QPS%20%2F%2032%C2%B5s-success)](https://zerosandonesllc.github.io/rDNS/benchmarks/)
+
+A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering. **437K queries per second at 32 µs latency** — 1.3-1.5× faster than Unbound on identical hardware.
 
 **Project site:** https://zerosandonesllc.github.io/rDNS/ — features, benchmarks, install guides, and use cases.
 
