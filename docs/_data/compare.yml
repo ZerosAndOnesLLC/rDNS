@@ -1,0 +1,33 @@
+columns:
+  - rDNS
+  - Unbound
+  - BIND
+  - PowerDNS
+  - CoreDNS
+  - Pi-hole
+
+rows:
+  - feature: Language
+    values: [Rust, C, C, C++, Go, "PHP / dnsmasq"]
+  - feature: Memory-safe by construction
+    values: ["yes", "no", "no", "no", "yes", partial]
+  - feature: Recursive resolver
+    values: ["yes", "yes", "yes", "yes (Recursor)", "yes", "via dnsmasq"]
+  - feature: Authoritative server
+    values: ["yes", "no", "yes", "yes", "yes", "no"]
+  - feature: DNS-over-TLS
+    values: ["yes", "yes", "yes", "yes", "yes", "no"]
+  - feature: DNSSEC validation
+    values: ["yes", "yes", "yes", "yes", "yes", "no"]
+  - feature: RPZ filtering
+    values: ["yes", "yes", "yes", "via Lua", "via plugin", "lists only"]
+  - feature: PostgreSQL backend
+    values: ["yes", "no", "no", "yes", "via plugin", "no"]
+  - feature: Prometheus metrics
+    values: ["yes", "no", "via patch", "yes", "yes", "via exporter"]
+  - feature: Capsicum sandbox (FreeBSD)
+    values: ["yes", partial, "no", "no", "no", "no"]
+  - feature: Single binary
+    values: ["yes", "no", "no", "no", "yes", "no"]
+  - feature: License
+    values: [MIT, BSD, MPL-2.0, GPLv2, "Apache 2.0", EUPL]

@@ -1,0 +1,40 @@
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How does rDNS compare to Unbound?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "rDNS measures 1.3-1.5x faster than Unbound 1.19 on cached query throughput in identical hardware tests. Both are recursive resolvers with DNSSEC and DoT; rDNS adds an authoritative mode, a PostgreSQL backend, and is memory-safe by construction (Rust)."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can rDNS replace BIND?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "For most authoritative and recursive workloads, yes. rDNS supports RFC 1035 zone files, DNSSEC, DoT, and RPZ. BIND has more decades of features (e.g. complex view ACLs, full RFC catalog); rDNS targets the common 95% in a far smaller, safer codebase."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is rDNS a Pi-hole alternative?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes for the DNS layer. rDNS handles upstream encryption (DoT), DNSSEC validation, caching, and RPZ-based blocking with standards-compliant blocklists. It does not ship a web admin UI."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is rDNS production ready?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "rDNS is at v{{ site.version }} and includes privilege dropping, sandboxing, rate limiting, Prometheus metrics, and serve-stale (RFC 8767) for graceful degradation. The project is open source under MIT and welcomes evaluation feedback."
+      }
+    }
+  ]
+}
+</script>
