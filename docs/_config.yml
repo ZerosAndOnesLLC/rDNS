@@ -36,6 +36,7 @@ exclude:
   - vendor/
   - README.md
   - .superpowers/
+  - assets/og-template.html
 
 defaults:
   - scope:

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; width: 1200px; height: 630px; }
+  body {
+    background: #0a0e1a;
+    color: #f8fafc;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+    position: relative;
+    overflow: hidden;
+  }
+  .bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(40% 50% at 25% 30%, rgba(165,180,252,0.25), transparent 70%),
+      radial-gradient(55% 55% at 80% 50%, rgba(240,171,252,0.22), transparent 70%);
+  }
+  .frame {
+    position: relative;
+    padding: 90px 100px;
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-size: 22px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #94a3b8; font-weight: 600;
+  }
+  h1 {
+    font-size: 96px; line-height: 1.05; letter-spacing: -0.02em;
+    font-weight: 800; margin: 24px 0 0; max-width: 18ch;
+  }
+  .grad {
+    background: linear-gradient(90deg, #a5b4fc, #f0abfc);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta {
+    display: flex; align-items: center; gap: 28px;
+    font-size: 28px; color: #cbd5e1;
+  }
+  .stat { font-weight: 800; font-size: 36px; color: #f8fafc; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #34d399; box-shadow: 0 0 12px #34d399; }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="frame">
+    <div>
+      <p class="eyebrow"><span class="dot" style="display:inline-block;margin-right:12px;vertical-align:middle"></span>rDNS — a fast, safe DNS server</p>
+      <h1>437K queries per second. <span class="grad">In Rust.</span></h1>
+    </div>
+    <div class="meta">
+      <span class="stat">32 µs</span><span>average latency</span>
+      <span>·</span>
+      <span class="stat">MIT</span><span>licensed</span>
+    </div>
+  </div>
+</body>
+</html>
