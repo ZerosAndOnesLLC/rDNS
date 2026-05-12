@@ -1,0 +1,25 @@
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "rDNS",
+  "description": {{ site.description | strip_newlines | jsonify }},
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, FreeBSD, macOS",
+  "softwareVersion": "{{ site.version }}",
+  "license": "https://opensource.org/licenses/MIT",
+  "downloadUrl": "https://github.com/{{ site.repository }}/releases",
+  "codeRepository": "https://github.com/{{ site.repository }}",
+  "programmingLanguage": "Rust",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "ZerosAndOnesLLC",
+    "url": "https://github.com/ZerosAndOnesLLC"
+  }
+}
+</script>
