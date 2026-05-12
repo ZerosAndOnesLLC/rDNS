@@ -24,22 +24,29 @@
   }
 
   // Copy-to-clipboard for code blocks
-  document.querySelectorAll('pre > code').forEach(function (code) {
-    var pre = code.parentElement;
-    if (pre.querySelector('.copy-btn')) return;
-    var btn = document.createElement('button');
-    btn.className = 'copy-btn';
-    btn.type = 'button';
-    btn.setAttribute('aria-label', 'Copy code');
-    btn.textContent = 'Copy';
-    btn.addEventListener('click', function () {
-      navigator.clipboard.writeText(code.textContent).then(function () {
-        btn.textContent = 'Copied';
-        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    document.querySelectorAll('pre > code').forEach(function (code) {
+      var pre = code.parentElement;
+      if (pre.querySelector('.copy-btn')) return;
+      var btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.type = 'button';
+      btn.setAttribute('aria-label', 'Copy code');
+      btn.textContent = 'Copy';
+      btn.addEventListener('click', function () {
+        navigator.clipboard.writeText(code.textContent)
+          .then(function () {
+            btn.textContent = 'Copied';
+            setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+          })
+          .catch(function () {
+            btn.textContent = 'Error';
+            setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+          });
       });
+      pre.appendChild(btn);
     });
-    pre.appendChild(btn);
-  });
+  }
 
   // Tabbed install snippets
   document.querySelectorAll('.tabs').forEach(function (tabs) {
