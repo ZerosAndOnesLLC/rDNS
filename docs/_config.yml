@@ -8,6 +8,8 @@ url: "https://zerosandonesllc.github.io"
 baseurl: "/rDNS"
 repository: ZerosAndOnesLLC/rDNS
 
+permalink: pretty
+
 version: "1.17.5"
 
 author:
