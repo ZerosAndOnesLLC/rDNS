@@ -1,0 +1,46 @@
+title: rDNS
+tagline: A fast, safe DNS server. Written in Rust.
+description: >-
+  rDNS is a high-performance, security-focused DNS server written in Rust.
+  Recursive resolver, authoritative server, DNS-over-TLS, DNSSEC, RPZ filtering.
+  437,000 queries per second. 32 microsecond latency. MIT licensed.
+url: "https://zerosandonesllc.github.io"
+baseurl: "/rDNS"
+repository: ZerosAndOnesLLC/rDNS
+
+version: "1.17.5"
+
+author:
+  name: ZerosAndOnesLLC
+  github: ZerosAndOnesLLC
+
+twitter:
+  card: summary_large_image
+
+social:
+  links:
+    - https://github.com/ZerosAndOnesLLC/rDNS
+
+plugins:
+  - jekyll-sitemap
+  - jekyll-seo-tag
+  - jekyll-feed
+  - jekyll-redirect-from
+
+exclude:
+  - superpowers/
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
+  - README.md
+  - .superpowers/
+
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: default
+
+sass:
+  style: compressed
