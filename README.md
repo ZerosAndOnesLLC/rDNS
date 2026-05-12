@@ -2,6 +2,8 @@
 
 A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering.
 
+**Project site:** https://zerosandonesllc.github.io/rDNS/ — features, benchmarks, install guides, and use cases.
+
 ## Features
 
 - **Recursive Resolver** — Full iterative resolution from root hints with CNAME chain following

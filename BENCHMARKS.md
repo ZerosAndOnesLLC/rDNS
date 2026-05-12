@@ -1,5 +1,7 @@
 # rDNS Performance Benchmarks
 
+> Read the same data with charts at https://zerosandonesllc.github.io/rDNS/benchmarks/
+
 Benchmark results comparing rDNS against Unbound 1.19.2, the industry-standard recursive DNS resolver. All tests performed on the same machine using `dnsperf` 2.14.0 with cached queries over UDP.
 
 ## Test Environment
