@@ -1,0 +1,12 @@
+---
+layout: default
+---
+<header class="page-header section">
+  <div class="container">
+    <p class="label-uppercase">{{ page.eyebrow | default: "rDNS" }}</p>
+    <h1>{{ page.heading | default: page.title }}</h1>
+    {% if page.lede %}<p class="lead">{{ page.lede }}</p>{% endif %}
+  </div>
+</header>
+
+{{ content }}
