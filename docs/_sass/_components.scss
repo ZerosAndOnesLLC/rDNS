@@ -1,0 +1,142 @@
+.page-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+}
+
+.feature-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  background: var(--bg-elevated);
+  transition: transform 0.15s ease, border-color 0.15s ease;
+  &:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--accent-from) 40%, var(--border));
+  }
+}
+.feature-card .icon {
+  width: 32px; height: 32px;
+  color: var(--accent-solid);
+  margin-bottom: 0.85rem;
+}
+.feature-card h3 { margin-bottom: 0.35rem; }
+.feature-card p { color: var(--text-secondary); margin: 0; font-size: 0.95rem; }
+
+.split-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 2rem;
+  align-items: center;
+}
+@media (max-width: 768px) { .split-row { grid-template-columns: 1fr; } }
+
+/* Benchmark bar charts */
+.bench-chart { margin-block: 1.5rem; }
+.bench-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 90px;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+.bench-row .label { color: var(--text-secondary); }
+.bench-row .value { color: var(--text-primary); font-variant-numeric: tabular-nums; text-align: right; }
+.bench-row .track {
+  height: 14px; border-radius: 4px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.bench-row .bar {
+  height: 100%;
+  width: 0;
+  transition: width 1.2s cubic-bezier(.22,.61,.36,1);
+  border-radius: 4px;
+}
+.bench-row.rdns .bar { background: linear-gradient(90deg, var(--accent-from), var(--accent-to)); }
+.bench-row.unbound .bar { background: var(--text-muted); }
+
+/* Comparison table */
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+  margin-bottom: 1.5rem;
+  th, td {
+    text-align: left;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+  }
+  thead th {
+    position: sticky; top: 64px;
+    background: var(--bg-elevated);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+  }
+  tbody tr:nth-child(odd) td { background: color-mix(in srgb, var(--bg-elevated) 50%, transparent); }
+  .yes { color: var(--success); font-weight: 600; }
+  .no { color: var(--text-muted); }
+}
+@media (max-width: 768px) {
+  .compare-table-wrap { overflow-x: auto; }
+}
+
+/* Code block with copy */
+pre { position: relative; }
+pre > .copy-btn {
+  position: absolute;
+  top: 0.5rem; right: 0.5rem;
+  font-size: 0.75rem;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  &:hover { color: var(--text-primary); }
+}
+
+/* Tabs (install) */
+.tabs { margin-block: 1.5rem; }
+.tablist {
+  display: flex; flex-wrap: wrap; gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+.tablist [role="tab"] {
+  background: none; border: 0;
+  padding: 0.6rem 1rem;
+  font-size: 0.9rem; color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  &[aria-selected="true"] {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-solid);
+  }
+}
+
+/* Use-case cards */
+.use-case-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.5rem;
+}
+.use-case {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  background: var(--bg-elevated);
+}
+.use-case h3 { margin-bottom: 0.5rem; }
+.use-case pre { margin-top: 1rem; }
+
+/* Generic section title block */
+.section-title { max-width: 60ch; margin-bottom: 2rem; }
+.section-title p { color: var(--text-secondary); }
