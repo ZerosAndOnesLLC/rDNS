@@ -310,7 +310,7 @@ fn build_query(id: u16, name: &DnsName, rtype: RecordType) -> Message {
 /// remains unavailable. A single warn log is emitted on fallback.
 pub(crate) fn rand_id() -> u16 {
     let mut buf = [0u8; 2];
-    if getrandom::getrandom(&mut buf).is_ok() {
+    if getrandom::fill(&mut buf).is_ok() {
         return u16::from_ne_bytes(buf);
     }
 
