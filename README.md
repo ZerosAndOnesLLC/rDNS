@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-ce4218?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20FreeBSD%20%7C%20macOS-informational)](#deployment)
-[![Performance](https://img.shields.io/badge/perf-437K%20QPS%20%2F%2032%C2%B5s-success)](https://zerosandonesllc.github.io/rDNS/benchmarks/)
+[![Performance](https://img.shields.io/badge/perf-570K%20QPS%20%2F%20130%C2%B5s-success)](https://zerosandonesllc.github.io/rDNS/benchmarks/)
 
-A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering. **437K queries per second at 32 µs latency** — 1.3-1.5× faster than Unbound on identical hardware.
+A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering. **570K queries per second at ~130 µs under peak load** — 2.5–2.9× faster than Unbound on identical hardware.
 
 **Project site:** https://zerosandonesllc.github.io/rDNS/ — features, benchmarks, install guides, and use cases.
 
@@ -24,6 +24,19 @@ A high-performance, security-focused DNS server written in Rust. Supports recurs
 - **Security Hardening** — Privilege dropping, FreeBSD Capsicum, PID file management
 - **Cross-Platform** — FreeBSD, Linux, macOS
 - **Single Binary** — Mode determined by config, not compile flags
+
+## Performance
+
+Benchmarked against Unbound 1.19 on identical hardware (24-core AMD64, 100-query cached workload over UDP, `dnsperf`). rDNS sustains **570K queries per second** with flat ~130 µs average latency and zero packet loss as concurrency scales — 2.5–2.9× Unbound's throughput.
+
+| Concurrency | rDNS QPS | rDNS latency | Unbound QPS | Speedup |
+|------------:|---------:|-------------:|------------:|--------:|
+| 50 clients  | 570,188  | 133 µs       | 194,456     | 2.93×   |
+| 100 clients | 557,947  | 136 µs       | 195,668     | 2.85×   |
+| 200 clients | 547,489  | 137 µs       | 204,063     | 2.68×   |
+| 500 clients | 557,150  | 125 µs       | 223,277     | 2.50×   |
+
+Reproduce with `bench/throughput.sh` (peak throughput) or `bench/run.sh` (latency under sustained load). Full methodology and single-client latency figures in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Quick Start
 
