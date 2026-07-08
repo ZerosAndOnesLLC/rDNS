@@ -662,6 +662,7 @@ mod tests {
             original_ttl: 300,
             inserted_at: std::time::Instant::now(),
             hit_count: 0,
+            wire: std::sync::OnceLock::new(),
         };
 
         let msg = resolver.build_cached_response(&qname, RecordType::A, RecordClass::IN, &entry);
@@ -703,6 +704,7 @@ mod tests {
             original_ttl: 300,
             inserted_at: std::time::Instant::now(),
             hit_count: 0,
+            wire: std::sync::OnceLock::new(),
         };
 
         let msg = resolver.build_cached_response(&qname, RecordType::A, RecordClass::IN, &entry);

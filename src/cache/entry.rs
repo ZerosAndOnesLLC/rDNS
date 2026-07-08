@@ -1,7 +1,33 @@
 use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
 use crate::protocol::name::DnsName;
+use std::sync::OnceLock;
 use std::time::Instant;
+
+/// Precomputed wire form of a cached response body: the question section
+/// followed by the answer and (for negative entries) authority records,
+/// per minimal-responses. Label compression is already resolved against the
+/// canonical layout — a 12-byte header with the question starting at byte 12
+/// — so the compression pointers inside are valid whenever this blob is
+/// placed at buffer offset 12.
+///
+/// Built once, on the first cache hit for an entry, and reused for every
+/// subsequent hit. Only the response header and the record TTLs change
+/// between hits, so hits memcpy this blob and patch the TTL fields rather
+/// than re-encoding and re-compressing every record from scratch (which
+/// profiling showed was ~20% of the cached hot path's CPU).
+#[derive(Debug, Clone)]
+pub struct CachedWire {
+    /// Body bytes: question + answer RRs + authority RRs. TTL fields are
+    /// zero placeholders — the sender patches them per hit.
+    pub body: Vec<u8>,
+    /// Body-relative offsets of each 4-byte TTL field to patch per hit.
+    pub ttl_offsets: Vec<u32>,
+    /// Answer record count baked into `body`.
+    pub an_count: u16,
+    /// Authority record count baked into `body` (0 unless kept).
+    pub ns_count: u16,
+}
 
 /// A cached DNS response entry.
 #[derive(Debug, Clone)]
@@ -23,6 +49,10 @@ pub struct CacheEntry {
     /// Number of times this entry has been accessed (used by old CacheStore)
     #[allow(dead_code)]
     pub hit_count: u64,
+    /// Lazily-built precomputed wire response body (see [`CachedWire`]).
+    /// Interior-mutable so it can fill on the first hit while the entry is
+    /// shared read-only behind an `Arc`.
+    pub wire: OnceLock<CachedWire>,
 }
 
 /// Cache lookup key: (name, type, class)
@@ -57,6 +87,7 @@ impl CacheEntry {
             original_ttl: ttl,
             inserted_at: Instant::now(),
             hit_count: 0,
+            wire: OnceLock::new(),
         }
     }
 

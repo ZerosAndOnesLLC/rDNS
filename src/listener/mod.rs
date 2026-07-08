@@ -236,12 +236,17 @@ fn build_cached_response_fast(
     qclass: RecordClass,
     client_edns: Option<&EdnsOpt>,
 ) -> Vec<u8> {
+    // The response body (question + answers + authority, compression
+    // resolved) is identical for every hit on this entry — the entry is
+    // keyed by exactly this (qname, qtype, qclass), so build it once and
+    // reuse. Only the header and the record TTLs vary per hit.
+    let wire = entry
+        .wire
+        .get_or_init(|| encode_cached_wire(entry, qname, qtype, qclass));
+
     let rcode = if entry.negative { entry.negative_rcode } else { Rcode::NoError };
     let remaining_ttl = entry.remaining_ttl();
     let extra_ar = if client_edns.is_some() { 1 } else { 0 };
-
-    let keep_authority = minimal_keep_authority(entry.negative);
-    let authority_count = if keep_authority { entry.authority.len() as u16 } else { 0 };
 
     let header = Header {
         id,
@@ -255,27 +260,24 @@ fn build_cached_response_fast(
         cd: false,
         rcode,
         qd_count: 1,
-        an_count: entry.answers.len() as u16,
-        ns_count: authority_count,
+        an_count: wire.an_count,
+        ns_count: wire.ns_count,
         ar_count: extra_ar,
     };
 
-    // Pre-calculate approximate size
-    let mut buf = Vec::with_capacity(512);
+    let mut buf = Vec::with_capacity(HEADER_LEN + wire.body.len() + OPT_RR_LEN);
     header.encode(&mut buf);
-    let mut map = crate::protocol::name::CompressionMap::default();
+    debug_assert_eq!(buf.len(), HEADER_LEN, "header must encode to 12 bytes");
 
-    // Encode question (seeds the compression map with the qname).
-    qname.encode_compressed(&mut buf, &mut map);
-    buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
-    buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
+    // Copy the precomputed body; its compression pointers are absolute
+    // offsets valid because the body sits right after the 12-byte header.
+    buf.extend_from_slice(&wire.body);
 
-    // Encode answer (always) + authority (only when load-bearing) with
-    // adjusted TTL and compression. Additional is dropped per
-    // minimal-responses — clients re-query for glue if they need it.
-    encode_records_with_ttl(&mut buf, &mut map, &entry.answers, remaining_ttl);
-    if keep_authority {
-        encode_records_with_ttl(&mut buf, &mut map, &entry.authority, remaining_ttl);
+    // Patch each RR's TTL to the entry's current remaining TTL.
+    let remaining = remaining_ttl.to_be_bytes();
+    for &off in &wire.ttl_offsets {
+        let pos = HEADER_LEN + off as usize;
+        buf[pos..pos + 4].copy_from_slice(&remaining);
     }
 
     // OPT is always owner-name "." with no compressible rdata.
@@ -286,19 +288,77 @@ fn build_cached_response_fast(
     buf
 }
 
-/// Encode resource records with an overridden TTL and RFC 1035 §4.1.4
-/// label compression, directly into the buffer.
-fn encode_records_with_ttl(
+/// DNS message header length in bytes.
+const HEADER_LEN: usize = 12;
+/// Wire length of the server's fixed EDNS OPT record (owner "." + fixed
+/// fields); used only to size the response buffer.
+const OPT_RR_LEN: usize = 11;
+
+/// Encode a cache entry's response body once: question section + answer
+/// records + (for negative entries) authority records, per minimal
+/// responses. Compression is resolved against the canonical layout (a
+/// 12-byte header, so the question starts at offset 12) by encoding into a
+/// buffer seeded with a 12-byte placeholder that is then stripped. TTL
+/// fields are written as zero and their offsets recorded so the sender can
+/// patch them per hit. See [`crate::cache::entry::CachedWire`].
+fn encode_cached_wire(
+    entry: &crate::cache::entry::CacheEntry,
+    qname: &DnsName,
+    qtype: RecordType,
+    qclass: RecordClass,
+) -> crate::cache::entry::CachedWire {
+    let keep_authority = minimal_keep_authority(entry.negative);
+
+    // Seed with a 12-byte placeholder header so recorded offsets and
+    // compression pointers are message-absolute (matching the real layout).
+    let mut buf = vec![0u8; HEADER_LEN];
+    let mut map = crate::protocol::name::CompressionMap::default();
+
+    // Question (seeds the compression map with the qname).
+    qname.encode_compressed(&mut buf, &mut map);
+    buf.extend_from_slice(&u16::from(qtype).to_be_bytes());
+    buf.extend_from_slice(&u16::from(qclass).to_be_bytes());
+
+    let mut ttl_offsets = Vec::new();
+    encode_records_collect_ttl(&mut buf, &mut map, &entry.answers, &mut ttl_offsets);
+    let an_count = entry.answers.len() as u16;
+    let ns_count = if keep_authority {
+        encode_records_collect_ttl(&mut buf, &mut map, &entry.authority, &mut ttl_offsets);
+        entry.authority.len() as u16
+    } else {
+        0
+    };
+
+    // Strip the placeholder header; rebase TTL offsets to body-relative.
+    let body = buf[HEADER_LEN..].to_vec();
+    let ttl_offsets = ttl_offsets
+        .into_iter()
+        .map(|o| o - HEADER_LEN as u32)
+        .collect();
+
+    crate::cache::entry::CachedWire {
+        body,
+        ttl_offsets,
+        an_count,
+        ns_count,
+    }
+}
+
+/// Encode resource records with RFC 1035 §4.1.4 label compression, writing a
+/// zero placeholder for each TTL and recording the absolute buffer offset of
+/// that 4-byte TTL field into `ttl_offsets` for later patching.
+fn encode_records_collect_ttl(
     buf: &mut Vec<u8>,
     map: &mut crate::protocol::name::CompressionMap,
     records: &[crate::protocol::record::ResourceRecord],
-    ttl: u32,
+    ttl_offsets: &mut Vec<u32>,
 ) {
     for rr in records {
         rr.name.encode_compressed(buf, map);
         buf.extend_from_slice(&u16::from(rr.rtype).to_be_bytes());
         buf.extend_from_slice(&u16::from(rr.rclass).to_be_bytes());
-        buf.extend_from_slice(&ttl.to_be_bytes());
+        ttl_offsets.push(buf.len() as u32);
+        buf.extend_from_slice(&0u32.to_be_bytes()); // TTL placeholder, patched per hit
 
         // Reserve rdlength, encode rdata in place so any compression
         // pointers inside resolve against absolute buffer offsets, then
@@ -1261,5 +1321,126 @@ mod fuzz_lite_tests {
         buf.extend_from_slice(&[1, b'x', 0]);
         let r = drive(&buf).await;
         assert!(is_valid_response(&r));
+    }
+}
+
+/// Fix D: the precomputed-wire cache-hit path must produce byte-valid,
+/// correctly-compressed responses with per-hit TTLs.
+#[cfg(test)]
+mod cached_wire_tests {
+    use super::*;
+    use crate::cache::entry::CacheEntry;
+    use crate::protocol::rdata::RData;
+    use crate::protocol::record::ResourceRecord;
+    use std::net::Ipv4Addr;
+
+    fn rr(name: &str, rtype: RecordType, rdata: RData) -> ResourceRecord {
+        ResourceRecord {
+            name: DnsName::from_str(name).unwrap(),
+            rtype,
+            rclass: RecordClass::IN,
+            ttl: 0,
+            rdata,
+        }
+    }
+
+    /// A CNAME chain exercises compression in both owner names (answer[1]
+    /// owner == answer[0] rdata target) and rdata names (the CNAME target
+    /// shares the "example.com" suffix with the qname). If the precomputed
+    /// compression offsets were wrong, decode would yield wrong names or fail.
+    #[test]
+    fn cached_response_roundtrips_with_compression_and_ttl() {
+        let qname = DnsName::from_str("www.example.com").unwrap();
+        let cdn = DnsName::from_str("cdn.example.com").unwrap();
+        let answers = vec![
+            rr("www.example.com", RecordType::CNAME, RData::CNAME(cdn.clone())),
+            rr("cdn.example.com", RecordType::A, RData::A(Ipv4Addr::new(1, 2, 3, 4))),
+        ];
+        let entry = CacheEntry::new(answers, vec![], vec![], 300, false, Rcode::NoError);
+
+        let resp = build_cached_response_fast(
+            &entry, 0xBEEF, true, &qname, RecordType::A, RecordClass::IN, None,
+        );
+        let msg = Message::decode(&resp).expect("cached response must parse");
+
+        assert_eq!(msg.header.id, 0xBEEF);
+        assert!(msg.header.qr);
+        assert_eq!(msg.questions.len(), 1);
+        assert_eq!(msg.questions[0].name, qname);
+        assert_eq!(msg.answers.len(), 2);
+        assert_eq!(msg.answers[0].name, qname);
+        assert_eq!(msg.answers[1].name, cdn);
+        match &msg.answers[0].rdata {
+            RData::CNAME(n) => assert_eq!(*n, cdn),
+            other => panic!("expected CNAME, got {other:?}"),
+        }
+        match &msg.answers[1].rdata {
+            RData::A(ip) => assert_eq!(*ip, Ipv4Addr::new(1, 2, 3, 4)),
+            other => panic!("expected A, got {other:?}"),
+        }
+        assert!(msg.answers[0].ttl <= 300 && msg.answers[0].ttl > 295);
+        assert_eq!(msg.answers[0].ttl, msg.answers[1].ttl, "RRs share remaining TTL");
+    }
+
+    /// Negative (NXDOMAIN) entries keep the SOA in authority; the precompute
+    /// must carry it and patch its TTL too.
+    #[test]
+    fn negative_entry_keeps_authority() {
+        use crate::protocol::rdata::SoaData;
+        let qname = DnsName::from_str("nope.example.com").unwrap();
+        let soa = RData::SOA(SoaData {
+            mname: DnsName::from_str("ns.example.com").unwrap(),
+            rname: DnsName::from_str("hostmaster.example.com").unwrap(),
+            serial: 1,
+            refresh: 3600,
+            retry: 600,
+            expire: 604800,
+            minimum: 300,
+        });
+        let authority = vec![rr("example.com", RecordType::SOA, soa)];
+        let entry = CacheEntry::new(vec![], authority, vec![], 300, true, Rcode::NxDomain);
+
+        let resp = build_cached_response_fast(
+            &entry, 7, true, &qname, RecordType::A, RecordClass::IN, None,
+        );
+        let msg = Message::decode(&resp).expect("negative response must parse");
+        assert_eq!(msg.header.rcode, Rcode::NxDomain);
+        assert!(msg.answers.is_empty());
+        assert_eq!(msg.authority.len(), 1, "SOA must be kept in authority");
+        assert_eq!(msg.authority[0].name, DnsName::from_str("example.com").unwrap());
+    }
+
+    /// The blob is memoized on first hit; a second hit at the same instant is
+    /// byte-identical, and aging the entry patches a smaller TTL.
+    #[test]
+    fn memoized_then_ttl_patched_per_hit() {
+        let qname = DnsName::from_str("example.com").unwrap();
+        let answers = vec![rr("example.com", RecordType::A, RData::A(Ipv4Addr::new(9, 9, 9, 9)))];
+        let mut entry = CacheEntry::new(answers, vec![], vec![], 300, false, Rcode::NoError);
+        // Back-date to a stable, non-boundary elapsed so both builds see the
+        // same remaining-TTL second.
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(50);
+
+        let first = build_cached_response_fast(
+            &entry, 1, true, &qname, RecordType::A, RecordClass::IN, None,
+        );
+        assert!(entry.wire.get().is_some(), "first hit must memoize the blob");
+        let second = build_cached_response_fast(
+            &entry, 1, true, &qname, RecordType::A, RecordClass::IN, None,
+        );
+        assert_eq!(first, second, "memoized rebuild must be byte-identical");
+        let m = Message::decode(&first).unwrap();
+        assert!(m.answers[0].ttl <= 250 && m.answers[0].ttl > 245);
+
+        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(200);
+        let aged = build_cached_response_fast(
+            &entry, 1, true, &qname, RecordType::A, RecordClass::IN, None,
+        );
+        let aged_msg = Message::decode(&aged).unwrap();
+        assert!(
+            aged_msg.answers[0].ttl <= 100 && aged_msg.answers[0].ttl > 95,
+            "ttl should reflect ~100 remaining, got {}",
+            aged_msg.answers[0].ttl
+        );
     }
 }
