@@ -17,7 +17,7 @@ pub struct FastCacheStore {
 }
 
 struct FastCacheInner {
-    shards: Vec<RwLock<HashMap<CacheKey, CacheEntry, FxBuildHasher>>>,
+    shards: Vec<RwLock<HashMap<CacheKey, Arc<CacheEntry>, FxBuildHasher>>>,
     max_entries: usize,
     min_ttl: u32,
     max_ttl: u32,
@@ -91,7 +91,7 @@ impl FastCacheStore {
     /// entry found here is opportunistically removed to keep the cache
     /// clean. When enabled, we leave the entry in place so `lookup_stale`
     /// can find it after the fresh attempt fails.
-    pub fn lookup(&self, key: &CacheKey) -> Option<CacheEntry> {
+    pub fn lookup(&self, key: &CacheKey) -> Option<Arc<CacheEntry>> {
         let idx = Self::shard_idx(key);
         let stale_window = self.stale_window();
 
@@ -133,7 +133,7 @@ impl FastCacheStore {
     /// Returns `None` when serve-stale is disabled, when the entry is
     /// absent, when the entry is fresh (caller should have used `lookup`),
     /// or when the entry is past the grace window.
-    pub fn lookup_stale(&self, key: &CacheKey) -> Option<CacheEntry> {
+    pub fn lookup_stale(&self, key: &CacheKey) -> Option<Arc<CacheEntry>> {
         let stale_window = self.stale_window();
         if stale_window == 0 {
             return None;
@@ -200,7 +200,7 @@ impl FastCacheStore {
                     .fetch_add(evicted as u64, Ordering::Relaxed);
             }
 
-            shard.insert(key, entry);
+            shard.insert(key, Arc::new(entry));
         }
         self.inner.insertions.fetch_add(1, Ordering::Relaxed);
     }
