@@ -140,7 +140,7 @@ pub async fn serve(
         rrl: ResponseRateLimiter::new(100),
     });
 
-    let num_workers = (num_cpus() / 2).clamp(2, 16);
+    let num_workers = udp_worker_count();
 
     // Try SO_REUSEPORT: each worker gets its own socket, kernel distributes
     // packets, zero contention. Use standard tokio recv_from (not recvmmsg).
@@ -405,4 +405,26 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+/// Number of SO_REUSEPORT recv workers to spawn per UDP listen address.
+///
+/// Defaults to ~3/4 of the cores. The cached hot path is CPU-bound, so the
+/// prior `cores/2` (capped at 16 → 12 on a 24-core box) left throughput on
+/// the table; but benchmarking showed one-worker-per-core *regresses* under
+/// load — the recv workers then contend with tokio's runtime threads, the
+/// cache-miss resolution tasks, and the OS for the last cores. Three quarters
+/// is the measured sweet spot: it uses most of the machine while leaving
+/// headroom for everything else. Operators can override with
+/// `RDNS_UDP_WORKERS` to pin an exact count (e.g. to share a box with other
+/// services, or to match a specific core layout).
+fn udp_worker_count() -> usize {
+    if let Ok(v) = std::env::var("RDNS_UDP_WORKERS") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n >= 1 {
+                return n.min(256);
+            }
+        }
+    }
+    (num_cpus() * 3 / 4).clamp(2, 32)
 }
