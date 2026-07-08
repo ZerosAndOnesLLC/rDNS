@@ -2,7 +2,7 @@
 
 > Read the same data with charts at https://zerosandonesllc.github.io/rDNS/benchmarks/
 
-Benchmark results comparing rDNS against Unbound 1.19.2, the industry-standard recursive DNS resolver. All tests performed on the same machine using `dnsperf` 2.14.0 with cached queries over UDP.
+Benchmark results comparing rDNS against Unbound 1.19, the industry-standard recursive DNS resolver, using `dnsperf` with cached queries over UDP on the same machine. **Both servers use all cores** — earlier revisions of this document compared against a single-threaded Unbound, which is not a fair throughput test; the numbers below are all-cores-vs-all-cores.
 
 ## Test Environment
 
@@ -11,64 +11,64 @@ Benchmark results comparing rDNS against Unbound 1.19.2, the industry-standard r
 | CPU | 24 cores (AMD64) |
 | RAM | 32 GB |
 | OS | Linux 6.6.87 (WSL2) |
-| rDNS | v1.5.0, release build (LTO fat, codegen-units=1, target-cpu=native) |
-| Unbound | 1.19.2-1ubuntu3.7, single-threaded, module-config: iterator |
+| rDNS | v1.17.17, release build (LTO fat, codegen-units=1, `target-cpu=native`) |
+| Unbound | 1.19, `num-threads: 24`, `so-reuseport: yes`, module-config: iterator |
 | Workload | 100 unique queries (A, AAAA, MX, NS, TXT, NXDOMAIN), all cached |
-| Tool | `dnsperf -l 10 -Q 500000` (10 second runs, 500K QPS cap) |
+| Tool | `dnsperf`, 12 sender threads, 10-second runs, medians of 3 |
 
-Both servers configured as forwarders to 1.1.1.1 with DNSSEC disabled, logging at error-only level.
+Both servers configured as forwarders to 1.1.1.1 with DNSSEC disabled, logging at error-only level. The load generator (`dnsperf`) runs on the same 24-core box, so both servers contend with it for cores equally.
 
 ## Results Summary
 
 ### Throughput (Queries Per Second)
 
+Both servers land in the same band — the story is parity, with rDNS ahead at
+low concurrency and Unbound a touch ahead at very high concurrency.
+
 ```
                      rDNS vs Unbound — Queries Per Second
                      ════════════════════════════════════
 
-  500 clients  ██████████████████████████████████████████████  437,365
-               ██████████████████████████████████▌             328,564
+  500 clients  ██████████████████████████████████████████▍       565,544
+               █████████████████████████████████████████████▋    609,617
 
-  200 clients  █████████████████████████████████████████▎      375,192
-               ███████████████████████████▊                    263,109
+  200 clients  █████████████████████████████████████████████▍    605,527
+               ██████████████████████████████████████████████▏   615,914
 
-  100 clients  ██████████████████████████████████▌             328,340
-               █████████████████████████████████████           346,334
+  100 clients  ██████████████████████████████████████████████▋   621,983
+               ██████████████████████████████████████████████▌   621,024
 
-   50 clients  ████████████████████████████████████████████████ 437,434
-               ███████████████████████████████████▊            335,813
+   50 clients  ████████████████████████████████████████████████  639,581
+               ████████████████████████████████████████████▊     596,564
 
-   10 clients  ████████████████████████████████████████████▎   401,752
-               ███████████████████████████▋                    262,187
-
-               ■ rDNS    ■ Unbound
+               ■ rDNS    ■ Unbound (num-threads: 24)
 ```
 
 ### Head-to-Head Comparison
 
+Medians of 3 runs; both servers zero packet loss.
+
 | Clients | rDNS QPS | Unbound QPS | Ratio | Winner |
 |---------|----------|-------------|-------|--------|
-| 10 | 401,752 | 262,187 | 1.53x | rDNS |
-| 50 | 437,434 | 335,813 | 1.30x | rDNS |
-| 100 | 328,340 | 346,334 | 0.95x | ~Parity |
-| 200 | 375,192 | 263,109 | 1.43x | rDNS |
-| 500 | 437,365 | 328,564 | 1.33x | rDNS |
+| 50 | 639,581 | 596,564 | 1.07x | rDNS |
+| 100 | 621,983 | 621,024 | 1.00x | Parity |
+| 200 | 605,527 | 615,914 | 0.98x | ~Parity |
+| 500 | 565,544 | 609,617 | 0.93x | Unbound |
 
 ### Average Latency
 
 | Clients | rDNS | Unbound |
 |---------|------|---------|
-| 10 | 34 us | 317 us |
-| 50 | 32 us | 248 us |
-| 100 | 59 us | 230 us |
-| 200 | 57 us | 302 us |
-| 500 | 53 us | 237 us |
+| 50 | 98 us | 76 us |
+| 100 | 110 us | 70 us |
+| 200 | 107 us | 74 us |
+| 500 | 116 us | 79 us |
 
-At 50 clients, rDNS average latency is **32 microseconds** — 7.8x lower than Unbound.
+Unbound keeps a latency edge here (~75 µs vs rDNS's ~110 µs under peak load); rDNS's single-client latency is lower (see Notes). Both are far below any level a client would notice.
 
 ## Optimization Journey
 
-rDNS went through 5 optimization rounds, improving from 29K to 437K QPS — a **14.8x improvement**.
+rDNS went through six optimization rounds. The first five (baseline → SO_REUSEPORT) took it from 29K to 437K QPS. The sixth ([#86](https://github.com/ZerosAndOnesLLC/rDNS/issues/86)) was driven by `perf` after a *fair* comparison against multi-threaded Unbound revealed rDNS was behind: profiling showed ~33% of per-query CPU going to allocation and SipHash. Eliminating it lifted the cached hot path ~22% (524K → 640K at 50 clients) and closed the gap to parity.
 
 ### Progression
 
@@ -80,8 +80,9 @@ rDNS went through 5 optimization rounds, improving from 29K to 437K QPS — a **
   v3  ███████▍                                           84,881
   v4  ███████████████████████████████▎                  309,386
   v5  █████████████████████████████████████████████████  437,434
+  v6  ████████████████████████████████████████████████████████████████████  639,581
 
-  0       100K      200K      300K      400K      500K
+  0       100K      200K      300K      400K      500K      600K
 ```
 
 | Version | QPS (50 clients) | Key Change |
@@ -91,6 +92,17 @@ rDNS went through 5 optimization rounds, improving from 29K to 437K QPS — a **
 | **v3** | 84,881 | Sync fast-path for cache hits, direct wire encoding |
 | **v4** | 309,386 | parking_lot sharded cache, LTO, native CPU |
 | **v5** | 437,434 | SO_REUSEPORT per-worker sockets |
+| **v6** | 639,581 | Zero-alloc compression probe, FxHash cache, `Arc` entries, precomputed wire responses, tuned worker count |
+
+### v5 → v6: Kill per-query allocation and hashing (+22%)
+
+A fair benchmark (both servers on all cores) put rDNS at 0.85–0.97× of Unbound. `perf` under cached load found the cause: **~17% of CPU in `malloc`/`free` and ~16% in SipHash**, per query. Five changes removed it, four of them byte-for-byte identical to the previous output:
+
+- **Compression probe** — `DnsName::encode_compressed` allocated a throwaway `Vec<String>` (cloning every label) on every compression-map probe, for every name in every response. Now it borrows `&[String]` — zero allocation.
+- **Hashing** — the cache double-hashed each key with SipHash (once to pick a shard, once inside the shard map), and the name-compression map was SipHash-backed too. All switched to a small inline FxHash; the shard key is hashed once.
+- **`Arc` cache entries** — `lookup` deep-cloned the whole entry (every record `Vec`) per hit; entries are now shared behind `Arc`.
+- **Precomputed responses** — cache hits re-encoded the full response every time. The wire body (compression resolved, TTL placeholders) is now built once and memoized on the entry; hits `memcpy` it and patch the TTL fields. This was the single biggest win (`encode_compressed` had grown to ~13% of CPU on its own).
+- **Worker count** — retuned the UDP recv-worker default to ~¾ of cores (one-per-core measurably regressed under load), with an `RDNS_UDP_WORKERS` override.
 
 ### What Each Round Changed
 
@@ -177,7 +189,8 @@ dnsperf -s 127.0.0.1 -p 5553 -d bench/queryfile.txt -c 50 -l 10 -Q 500000
 
 ## Notes
 
-- Single-client performance (61K QPS) is lower than Unbound (215K) because SO_REUSEPORT distributes by flow hash — with one source, only one of N workers receives packets. This is not a realistic production scenario.
-- Unbound was tested with `num-threads: 1` (its default for benchmarking). Multi-threaded Unbound may perform differently.
+- **Unbound runs multi-threaded here** (`num-threads: 24`, `so-reuseport: yes`) — a fair all-cores-vs-all-cores test. Earlier versions of this document benchmarked a single-threaded Unbound, which inflated rDNS's apparent lead; the current numbers supersede those.
+- Single-client performance is lower than Unbound because SO_REUSEPORT distributes by flow hash — with one source, only one of N workers receives packets. This is not a realistic production scenario, but it means rDNS's *single-client* latency is very low even though its single-client throughput is not the headline number.
+- Numbers are medians of 3 runs. The load generator is co-located, so run-to-run variance is real (±5–10%); treat the two servers as at parity rather than reading a precise multiplier into any single row.
 - These benchmarks measure cached query throughput only. Cold-cache performance depends on upstream latency and is not measured here.
 - Results will vary by hardware, kernel version, and system load.

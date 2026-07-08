@@ -3,21 +3,21 @@ Version 2.15.0
 
 [Status] Command line: dnsperf -s 127.0.0.1 -p 5554 -d /home/mack/dev/rDNS/bench/queryfile.txt -c 200 -T 12 -l 10 -Q 1000000
 [Status] Sending queries (to 127.0.0.1:5554)
-[Status] Started at: Tue Jul  7 20:40:05 2026
+[Status] Started at: Wed Jul  8 10:26:43 2026
 [Status] Stopping after 10.000000 seconds
 [Status] Testing complete (time limit)
 
 Statistics:
 
-  Queries sent:         2040686
-  Queries completed:    2040686 (100.00%)
+  Queries sent:         6118211
+  Queries completed:    6118211 (100.00%)
   Queries lost:         0 (0.00%)
 
-  Response codes:       NOERROR 1938651 (95.00%), NXDOMAIN 102035 (5.00%)
-  Average packet size:  request 30, response 87
-  Run time (s):         10.000286
-  Queries per second:   204062.763805
+  Response codes:       NOERROR 5812301 (95.00%), NXDOMAIN 305910 (5.00%)
+  Average packet size:  request 30, response 88
+  Run time (s):         10.000203
+  Queries per second:   611808.680284
 
-  Average Latency (s):  0.000463 (min 0.000018, max 0.094272)
-  Latency StdDev (s):   0.000433
+  Average Latency (s):  0.000074 (min 0.000005, max 0.103343)
+  Latency StdDev (s):   0.000252
 

@@ -36,7 +36,7 @@ jsonld: faqpage
 <section class="section">
   <div class="container">
     <h2>vs Unbound</h2>
-    <p>Unbound is the gold standard for recursive resolution. It's mature, fast, and battle-tested. rDNS measures 1.3-1.5× faster on cached query throughput in identical hardware tests, and adds an authoritative mode that Unbound doesn't have.</p>
+    <p>Unbound is the gold standard for recursive resolution. It's mature, fast, and battle-tested. rDNS measures on par with a fully multi-threaded Unbound on cached query throughput in identical hardware tests (ahead at low concurrency), and adds an authoritative mode that Unbound doesn't have.</p>
     <p><strong>Choose Unbound</strong> if you want the most-deployed recursive resolver on the internet and your team already operates it.</p>
     <p><strong>Choose rDNS</strong> if you want higher performance per core, a memory-safe codebase, and the option to serve authoritative zones too.</p>
 

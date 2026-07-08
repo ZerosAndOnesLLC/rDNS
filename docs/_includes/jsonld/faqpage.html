@@ -8,7 +8,7 @@
       "name": "How does rDNS compare to Unbound?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "rDNS measures 1.3-1.5x faster than Unbound 1.19 on cached query throughput in identical hardware tests. Both are recursive resolvers with DNSSEC and DoT; rDNS adds an authoritative mode, a PostgreSQL backend, and is memory-safe by construction (Rust)."
+        "text": "rDNS measures on par with a fully multi-threaded Unbound 1.19 on cached query throughput in identical hardware tests (ahead at low concurrency, ~640K QPS peak). Both are recursive resolvers with DNSSEC and DoT; rDNS adds an authoritative mode, a PostgreSQL backend, and is memory-safe by construction (Rust)."
       }
     },
     {

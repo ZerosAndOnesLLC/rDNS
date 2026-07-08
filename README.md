@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-ce4218?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20FreeBSD%20%7C%20macOS-informational)](#deployment)
-[![Performance](https://img.shields.io/badge/perf-570K%20QPS%20%2F%20130%C2%B5s-success)](https://zerosandonesllc.github.io/rDNS/benchmarks/)
+[![Performance](https://img.shields.io/badge/perf-640K%20QPS-success)](https://zerosandonesllc.github.io/rDNS/benchmarks/)
 
-A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering. **570K queries per second at ~130 µs under peak load** — 2.5–2.9× faster than Unbound on identical hardware.
+A high-performance, security-focused DNS server written in Rust. Supports recursive resolution, authoritative serving, DNS-over-TLS, DNSSEC validation, and RPZ filtering. **~640K cached queries per second** — on par with a fully multi-threaded Unbound 1.19 on identical hardware, and faster at low-to-moderate concurrency.
 
 **Project site:** https://zerosandonesllc.github.io/rDNS/ — features, benchmarks, install guides, and use cases.
 
@@ -27,16 +27,18 @@ A high-performance, security-focused DNS server written in Rust. Supports recurs
 
 ## Performance
 
-Benchmarked against Unbound 1.19 on identical hardware (24-core AMD64, 100-query cached workload over UDP, `dnsperf`). rDNS sustains **570K queries per second** with flat ~130 µs average latency and zero packet loss as concurrency scales — 2.5–2.9× Unbound's throughput.
+Benchmarked against **fully multi-threaded** Unbound 1.19 (`num-threads: 24`, `so-reuseport`) on identical hardware — 24-core AMD64, 100-query cached workload over UDP, `dnsperf`, medians of 3 runs, zero packet loss on both. rDNS peaks around **640K queries per second** and tracks Unbound closely across the concurrency range: ahead at low concurrency, roughly level in the middle, a little behind at very high concurrency.
 
-| Concurrency | rDNS QPS | rDNS latency | Unbound QPS | Speedup |
-|------------:|---------:|-------------:|------------:|--------:|
-| 50 clients  | 570,188  | 133 µs       | 194,456     | 2.93×   |
-| 100 clients | 557,947  | 136 µs       | 195,668     | 2.85×   |
-| 200 clients | 547,489  | 137 µs       | 204,063     | 2.68×   |
-| 500 clients | 557,150  | 125 µs       | 223,277     | 2.50×   |
+| Concurrency | rDNS QPS | rDNS latency | Unbound QPS | Unbound latency | Ratio |
+|------------:|---------:|-------------:|------------:|----------------:|------:|
+| 50 clients  | 639,581  | 98 µs        | 596,564     | 76 µs           | 1.07× |
+| 100 clients | 621,983  | 110 µs       | 621,024     | 70 µs           | 1.00× |
+| 200 clients | 605,527  | 107 µs       | 615,914     | 74 µs           | 0.98× |
+| 500 clients | 565,544  | 116 µs       | 609,617     | 79 µs           | 0.93× |
 
-Reproduce with `bench/throughput.sh` (peak throughput) or `bench/run.sh` (latency under sustained load). Full methodology and single-client latency figures in [BENCHMARKS.md](BENCHMARKS.md).
+Unbound keeps a latency edge (~75 µs vs ~110 µs); rDNS holds a throughput edge at lower concurrency. Earlier releases published far higher multipliers, but those compared against a **single-threaded** Unbound — this table is the honest all-cores-vs-all-cores result. A profiling-driven optimization round ([#86](https://github.com/ZerosAndOnesLLC/rDNS/issues/86)) cut ~33% of per-query CPU (allocation + hashing) to close the gap.
+
+Reproduce with `bench/throughput.sh` (peak throughput) or `bench/run.sh` (latency under sustained load). Full methodology, the optimization journey, and single-client figures in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Quick Start
 

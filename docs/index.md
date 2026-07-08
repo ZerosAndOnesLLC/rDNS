@@ -1,7 +1,7 @@
 ---
 layout: default
 title: null
-description: rDNS is a high-performance Rust DNS server. Recursive resolver, authoritative, DNS-over-TLS, DNSSEC, RPZ. 437K QPS at 32µs latency. MIT licensed.
+description: rDNS is a high-performance Rust DNS server. Recursive resolver, authoritative, DNS-over-TLS, DNSSEC, RPZ. ~640K cached QPS, on par with multi-threaded Unbound. MIT licensed.
 jsonld: software-application
 ---
 
@@ -17,15 +17,15 @@ jsonld: software-application
 
     <div class="stats-row">
       <div class="stat">
-        <div class="stat-value">437,434</div>
+        <div class="stat-value">639,581</div>
         <div class="stat-label">queries per second (cached, 50 clients)</div>
       </div>
       <div class="stat">
-        <div class="stat-value">32 µs</div>
-        <div class="stat-label">average cached query latency</div>
+        <div class="stat-value">98 µs</div>
+        <div class="stat-label">cached query latency under load</div>
       </div>
       <div class="stat">
-        <div class="stat-value">14.8×</div>
+        <div class="stat-value">21×</div>
         <div class="stat-label">faster than the v1 baseline</div>
       </div>
     </div>
@@ -78,8 +78,8 @@ jsonld: software-application
   <div class="container split-row">
     <div>
       <h4 class="label-uppercase">Performance</h4>
-      <h2>1.3× faster than Unbound. <span class="gradient-text">In Rust.</span></h2>
-      <p>rDNS handles 437K cached queries per second on commodity hardware, with average latency under 60 microseconds. The optimization journey from a naïve 29K-QPS baseline is documented step by step.</p>
+      <h2>On par with multi-threaded Unbound. <span class="gradient-text">In Rust.</span></h2>
+      <p>rDNS handles ~640K cached queries per second on commodity hardware — matching a fully multi-threaded Unbound, and ahead at low concurrency. The optimization journey from a naïve 29K-QPS baseline is documented step by step.</p>
       <p><a href="{{ '/benchmarks/' | relative_url }}">Read the benchmarks →</a></p>
     </div>
     <div>
@@ -87,15 +87,15 @@ jsonld: software-application
         <div class="bench-row rdns">
           <span class="label">rDNS</span>
           <div class="track"><div class="bar" data-pct="100"></div></div>
-          <span class="value">437,434</span>
+          <span class="value">639,581</span>
         </div>
         <div class="bench-row unbound">
           <span class="label">Unbound</span>
-          <div class="track"><div class="bar" data-pct="77"></div></div>
-          <span class="value">335,813</span>
+          <div class="track"><div class="bar" data-pct="93"></div></div>
+          <span class="value">596,564</span>
         </div>
       </div>
-      <p class="label-uppercase">QPS, 50 cached clients, dnsperf 2.14</p>
+      <p class="label-uppercase">QPS, 50 cached clients, both on all cores</p>
     </div>
   </div>
 </section>
