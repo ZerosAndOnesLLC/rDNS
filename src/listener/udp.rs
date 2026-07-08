@@ -16,6 +16,11 @@ use tokio::sync::Semaphore;
 
 const MAX_UDP_RECV: usize = 4096;
 const MAX_UDP_INFLIGHT: usize = 4096;
+/// Datagrams to drain per `recvmmsg`/`sendmmsg` syscall on Linux. Matches the
+/// batch module's internal cap; one reactor wakeup amortizes up to this many
+/// packets.
+#[cfg(target_os = "linux")]
+const UDP_BATCH_SIZE: usize = 64;
 
 /// Hard ceiling on how long a single UDP query's resolution may take before
 /// its task is cancelled and its inflight permit released. Without this,
@@ -143,7 +148,9 @@ pub async fn serve(
     let num_workers = udp_worker_count();
 
     // Try SO_REUSEPORT: each worker gets its own socket, kernel distributes
-    // packets, zero contention. Use standard tokio recv_from (not recvmmsg).
+    // packets, zero contention. On Linux each worker drains its socket with
+    // recvmmsg/sendmmsg (see recv_loop_batched); elsewhere it falls back to
+    // per-datagram recv_from/send_to.
     let mut sockets = Vec::with_capacity(num_workers);
     let mut reuseport = true;
 
@@ -163,7 +170,7 @@ pub async fn serve(
         tracing::info!(%addr, workers = num_workers, "UDP listeners bound (SO_REUSEPORT)");
         for socket in sockets {
             let ctx = ctx.clone();
-            handles.push(tokio::spawn(recv_loop(Arc::new(socket), ctx)));
+            handles.push(spawn_recv_worker(Arc::new(socket), ctx));
         }
     } else {
         // Fallback: shared socket with multiple recv tasks
@@ -173,7 +180,7 @@ pub async fn serve(
         for _ in 0..num_workers {
             let socket = socket.clone();
             let ctx = ctx.clone();
-            handles.push(tokio::spawn(recv_loop(socket, ctx)));
+            handles.push(spawn_recv_worker(socket, ctx));
         }
     }
 
@@ -193,7 +200,33 @@ pub async fn serve(
     Ok(())
 }
 
+/// Spawn one receive worker for `socket`. On Linux this drives batched
+/// recvmmsg/sendmmsg; on other platforms it uses the per-datagram loop.
+fn spawn_recv_worker(
+    socket: Arc<UdpSocket>,
+    ctx: Arc<QueryContext>,
+) -> tokio::task::JoinHandle<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // Batched recvmmsg/sendmmsg is the default on Linux. RDNS_UDP_BATCH
+        // tunes it: "0" forces the per-datagram loop; "N" sets the batch size
+        // (clamped to 1..=UDP_BATCH_SIZE); unset uses the default.
+        match udp_batch_setting() {
+            Some(0) => tokio::spawn(recv_loop(socket, ctx)),
+            Some(n) => tokio::spawn(recv_loop_batched(socket, ctx, n)),
+            None => tokio::spawn(recv_loop_batched(socket, ctx, UDP_BATCH_SIZE)),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tokio::spawn(recv_loop(socket, ctx))
+    }
+}
+
 /// Main receive loop — cache hits handled inline, misses spawn a task.
+/// On Linux this is superseded by [`recv_loop_batched`]; kept for other
+/// platforms and as the shared-socket reference implementation.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
     let mut buf = [0u8; MAX_UDP_RECV];
 
@@ -285,6 +318,141 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
                 }
             }
         });
+    }
+}
+
+/// Batched receive loop (Linux). One `recvmmsg` drains up to
+/// [`UDP_BATCH_SIZE`] datagrams per reactor wakeup; each is run through the
+/// same fast path as [`recv_loop`], and every cache-hit response is sent back
+/// in a single `sendmmsg`. This amortizes the per-datagram syscall and
+/// reactor-wakeup overhead that dominated the profile after the hot-path
+/// allocation/hashing fixes. Behaviour per datagram is identical to
+/// `recv_loop`; only the I/O is batched.
+#[cfg(target_os = "linux")]
+async fn recv_loop_batched(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>, batch_size: usize) {
+    use super::udp_batch::{self, SendPacket};
+    use std::os::fd::AsRawFd;
+    use tokio::io::Interest;
+
+    let batch_size = batch_size.clamp(1, UDP_BATCH_SIZE);
+    let fd = socket.as_raw_fd();
+    let mut recv_batch = udp_batch::alloc_recv_batch(batch_size);
+    let mut send_batch: Vec<SendPacket> = Vec::with_capacity(batch_size);
+
+    loop {
+        // Block (via the reactor) until at least one datagram is ready, then
+        // drain up to UDP_BATCH_SIZE of them in one syscall.
+        let n = match socket
+            .async_io(Interest::READABLE, || {
+                udp_batch::recvmmsg_batch(fd, &mut recv_batch)
+            })
+            .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::debug!(error = %e, "UDP recvmmsg error");
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                continue;
+            }
+        };
+
+        send_batch.clear();
+        for pkt in recv_batch.iter().take(n) {
+            let len = pkt.len;
+            let src = pkt.src;
+            let buf = &pkt.buf[..len];
+
+            // Rate limit — drop silently if over limit.
+            if !ctx.rate_limiter.check(src.ip()) {
+                continue;
+            }
+
+            let recursion_allowed = ctx.acl.is_allowed(src.ip());
+            let client_edns = super::parse_edns_from_query(buf);
+            let effective_size = super::effective_udp_response_size(client_edns.as_ref());
+            let server_opt = if client_edns.is_some() {
+                Some(super::server_edns_opt())
+            } else {
+                None
+            };
+
+            // Sync fast path: cache hit, auth, RPZ — queue the reply for the
+            // batched send instead of sending it inline.
+            if let Some(mut response) =
+                try_handle_sync(buf, &ctx, recursion_allowed, client_edns.as_ref())
+            {
+                if !response.is_empty() {
+                    super::truncate_udp_response(&mut response, effective_size, server_opt.as_ref());
+                    let qname_hash = qname_hash_from_buf(buf);
+                    let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
+                    if ctx.rrl.check(&src, qname_hash, rcode) {
+                        super::log_query(src, buf, &response, "udp");
+                        send_batch.push(SendPacket { data: response, dest: src });
+                    }
+                }
+                // Empty response = RPZ Drop — silently discard.
+                continue;
+            }
+
+            // Cache miss — spawn an async task for resolution (sends inline).
+            let permit = match ctx.inflight.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => continue, // At capacity, drop query
+            };
+            let query_data = buf.to_vec();
+            let socket = socket.clone();
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let mut resp = match tokio::time::timeout(
+                    super::effective_query_timeout(UDP_QUERY_TIMEOUT),
+                    super::handle_query(
+                        &query_data,
+                        &ctx.cache,
+                        &ctx.resolver,
+                        &ctx.auth,
+                        &ctx.rpz,
+                        recursion_allowed,
+                    ),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        tracing::debug!("UDP query resolution timed out");
+                        return;
+                    }
+                };
+                if !resp.is_empty() {
+                    super::truncate_udp_response(&mut resp, effective_size, server_opt.as_ref());
+                    let qname_hash = qname_hash_from_buf(&query_data);
+                    let rcode = if resp.len() >= 4 { resp[3] & 0x0F } else { 0 };
+                    if ctx.rrl.check(&src, qname_hash, rcode) {
+                        let _ = socket.send_to(&resp, src).await;
+                        super::log_query(src, &query_data, &resp, "udp");
+                    }
+                }
+            });
+        }
+
+        // Batch-send all queued cache-hit responses. sendmmsg may send fewer
+        // than requested under pressure; loop over the remainder.
+        let mut sent = 0;
+        while sent < send_batch.len() {
+            match socket
+                .async_io(Interest::WRITABLE, || {
+                    udp_batch::sendmmsg_batch(fd, &send_batch[sent..])
+                })
+                .await
+            {
+                Ok(0) => break, // avoid spinning if nothing progressed
+                Ok(c) => sent += c,
+                Err(e) => {
+                    tracing::debug!(error = %e, "UDP sendmmsg error");
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -405,6 +573,15 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+/// Parse `RDNS_UDP_BATCH`: `Some(0)` = per-datagram loop, `Some(n)` = batch
+/// size n, `None` = use the default batch size. Only consulted on Linux.
+#[cfg(target_os = "linux")]
+fn udp_batch_setting() -> Option<usize> {
+    std::env::var("RDNS_UDP_BATCH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
 }
 
 /// Number of SO_REUSEPORT recv workers to spawn per UDP listen address.

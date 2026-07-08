@@ -4,6 +4,20 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.17.19] - 2026-07-08
+
+### Added
+- **Batched UDP I/O (Linux).** The dormant `recvmmsg`/`sendmmsg` module is now
+  wired into the UDP recv path: one syscall drains up to 64 datagrams per
+  reactor wakeup and cache-hit replies are sent in a single `sendmmsg`,
+  reducing per-datagram syscall overhead. Per-datagram behavior is unchanged.
+  New `RDNS_UDP_BATCH` env var: `0` forces the per-datagram loop, `N` sets the
+  batch size; default is batched. Non-Linux platforms keep the per-datagram
+  loop. On a busy co-located test rig the throughput delta is within noise
+  (each `SO_REUSEPORT` worker rarely has more than 1–2 packets queued per
+  wakeup at steady state); the win shows on quieter/bare-metal hosts and under
+  bursts, where the syscall count actually drops.
+
 ## [1.17.14] – [1.17.17] - 2026-07-08
 
 Profiling-driven optimization of the cached UDP hot path ([#86](https://github.com/ZerosAndOnesLLC/rDNS/issues/86)). A fair benchmark against **multi-threaded** Unbound 1.19 (earlier numbers had compared against single-threaded Unbound) showed rDNS ~0.85–0.97× of Unbound; `perf` traced ~33% of per-query CPU to allocation and SipHash. These changes bring rDNS to parity (peak ~640K QPS, ahead at low concurrency). Fixes A–C are byte-identical to previous output.
