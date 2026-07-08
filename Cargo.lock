@@ -1055,7 +1055,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rdns-server"
-version = "1.17.13"
+version = "1.17.14"
 dependencies = [
  "anyhow",
  "arc-swap",

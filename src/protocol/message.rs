@@ -133,7 +133,7 @@ impl Message {
         let mut buf = Vec::with_capacity(512);
         header.encode(&mut buf);
 
-        let mut map = super::name::CompressionMap::new();
+        let mut map = super::name::CompressionMap::default();
         for q in &self.questions {
             q.encode_compressed(&mut buf, &mut map);
         }

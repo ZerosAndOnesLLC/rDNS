@@ -36,9 +36,10 @@ pub const MAX_COMPRESSION_OFFSET: u16 = 0x3FFF;
 
 /// Compression state threaded through a single message encode. Maps a
 /// lowercased label suffix to the byte offset where that suffix begins
-/// in the output buffer. Use `CompressionMap::new()` at the start of
+/// in the output buffer. Use `CompressionMap::default()` at the start of
 /// every message encode — never reuse across messages.
-pub type CompressionMap = std::collections::HashMap<Vec<String>, u16>;
+pub type CompressionMap =
+    std::collections::HashMap<Vec<String>, u16, crate::fasthash::FxBuildHasher>;
 
 impl DnsName {
     /// Create a root name (empty label list, represents ".").
@@ -214,7 +215,10 @@ impl DnsName {
         let mut match_idx = self.labels.len();
         let mut match_offset: Option<u16> = None;
         for i in 0..self.labels.len() {
-            if let Some(&off) = map.get(&self.labels[i..].to_vec()) {
+            // Probe with a borrowed `&[String]` — `Vec<String>: Borrow<[String]>`,
+            // so no throwaway allocation per label (this ran for every label of
+            // every name in every response).
+            if let Some(&off) = map.get(&self.labels[i..]) {
                 match_idx = i;
                 match_offset = Some(off);
                 break;
@@ -371,7 +375,7 @@ mod tests {
     #[test]
     fn compress_first_name_is_uncompressed() {
         let name = DnsName::from_str("example.com").unwrap();
-        let mut map = CompressionMap::new();
+        let mut map = CompressionMap::default();
         let mut buf = Vec::new();
         name.encode_compressed(&mut buf, &mut map);
         assert_eq!(buf, b"\x07example\x03com\x00");
@@ -384,7 +388,7 @@ mod tests {
     fn compress_exact_suffix_match_emits_pointer() {
         let first = DnsName::from_str("example.com").unwrap();
         let second = DnsName::from_str("www.example.com").unwrap();
-        let mut map = CompressionMap::new();
+        let mut map = CompressionMap::default();
         let mut buf = Vec::new();
         first.encode_compressed(&mut buf, &mut map);
         let start = buf.len();
@@ -404,7 +408,7 @@ mod tests {
         // A records that all carry the canonical name. Every repeat name
         // should shrink to a 2-byte pointer.
         let canonical = DnsName::from_str("youtube-ui.l.google.com").unwrap();
-        let mut map = CompressionMap::new();
+        let mut map = CompressionMap::default();
         let mut buf = Vec::new();
         canonical.encode_compressed(&mut buf, &mut map);
         let after_first = buf.len();
@@ -422,7 +426,7 @@ mod tests {
     #[test]
     fn compress_root_never_pointers() {
         let root = DnsName::root();
-        let mut map = CompressionMap::new();
+        let mut map = CompressionMap::default();
         let mut buf = Vec::new();
         root.encode_compressed(&mut buf, &mut map);
         root.encode_compressed(&mut buf, &mut map);
@@ -435,7 +439,7 @@ mod tests {
         // become a pointer into the middle of the first.
         let long = DnsName::from_str("a.b.com").unwrap();
         let short = DnsName::from_str("b.com").unwrap();
-        let mut map = CompressionMap::new();
+        let mut map = CompressionMap::default();
         let mut buf = Vec::new();
         long.encode_compressed(&mut buf, &mut map);
         let start = buf.len();
@@ -452,7 +456,7 @@ mod tests {
         // un-pointable offset. The name must still encode correctly, but
         // no suffix should be recorded.
         let mut buf = vec![0u8; (MAX_COMPRESSION_OFFSET as usize) + 5];
-        let mut map = CompressionMap::new();
+        let mut map = CompressionMap::default();
         let name = DnsName::from_str("example.com").unwrap();
         let before = buf.len();
         name.encode_compressed(&mut buf, &mut map);

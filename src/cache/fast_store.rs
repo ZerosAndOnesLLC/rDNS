@@ -1,7 +1,7 @@
 use super::entry::{CacheEntry, CacheKey};
+use crate::fasthash::{fx_hash, FxBuildHasher};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,7 @@ pub struct FastCacheStore {
 }
 
 struct FastCacheInner {
-    shards: Vec<RwLock<HashMap<CacheKey, CacheEntry>>>,
+    shards: Vec<RwLock<HashMap<CacheKey, CacheEntry, FxBuildHasher>>>,
     max_entries: usize,
     min_ttl: u32,
     max_ttl: u32,
@@ -36,7 +36,12 @@ impl FastCacheStore {
     pub fn new(max_entries: usize, min_ttl: u32, max_ttl: u32, negative_ttl: u32) -> Self {
         let per_shard = max_entries / NUM_SHARDS + 1;
         let shards = (0..NUM_SHARDS)
-            .map(|_| RwLock::new(HashMap::with_capacity(per_shard / 4)))
+            .map(|_| {
+                RwLock::new(HashMap::with_capacity_and_hasher(
+                    per_shard / 4,
+                    FxBuildHasher::default(),
+                ))
+            })
             .collect();
 
         Self {
@@ -70,9 +75,10 @@ impl FastCacheStore {
 
     #[inline]
     fn shard_idx(key: &CacheKey) -> usize {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        hasher.finish() as usize & (NUM_SHARDS - 1)
+        // FxHash (not SipHash) — the key space is bounded by the cache size and
+        // eviction, so DoS-resistance is unnecessary here and SipHash dominated
+        // the cached hot path. The shard HashMap uses the same fast hasher.
+        fx_hash(key) as usize & (NUM_SHARDS - 1)
     }
 
     /// Look up a fresh cache entry. Uses read lock for maximum concurrency.

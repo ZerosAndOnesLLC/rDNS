@@ -263,7 +263,7 @@ fn build_cached_response_fast(
     // Pre-calculate approximate size
     let mut buf = Vec::with_capacity(512);
     header.encode(&mut buf);
-    let mut map = crate::protocol::name::CompressionMap::new();
+    let mut map = crate::protocol::name::CompressionMap::default();
 
     // Encode question (seeds the compression map with the qname).
     qname.encode_compressed(&mut buf, &mut map);

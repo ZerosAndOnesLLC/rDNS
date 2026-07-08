@@ -2,6 +2,7 @@ mod auth;
 mod cache;
 mod config;
 mod control;
+mod fasthash;
 mod dnssec;
 mod listener;
 mod metrics;
