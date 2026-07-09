@@ -1,6 +1,6 @@
 [package]
 name = "rdns-server"
-version = "1.17.19"
+version = "1.17.20"
 edition = "2024"
 license = "MIT"
 description = "A high-performance, security-focused DNS server written in Rust"
@@ -9,6 +9,9 @@ repository = "https://github.com/ZerosAndOnesLLC/rDNS"
 readme = "README.md"
 keywords = ["dns", "dns-server", "authoritative", "resolver", "rpz"]
 categories = ["network-programming", "command-line-utilities"]
+# Keep the published crate lean: the marketing site, benchmark harness, and
+# internal planning notes are not part of the shipped server.
+exclude = ["docs/", "bench/", "plan.md", ".superpowers/", ".claude/"]
 
 [[bin]]
 name = "rdns"

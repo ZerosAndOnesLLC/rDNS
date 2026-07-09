@@ -4,6 +4,16 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.17.20] - 2026-07-08
+
+First crates.io release since 1.17.11 — bundles every change from 1.17.12
+through 1.17.20 (dependency refresh, the hot-path optimization round, and
+batched UDP I/O).
+
+### Changed
+- Packaging: exclude the marketing site (`docs/`), benchmark harness
+  (`bench/`), and internal notes from the published crate — 135 → 69 files.
+
 ## [1.17.19] - 2026-07-08
 
 ### Added
