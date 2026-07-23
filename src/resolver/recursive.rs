@@ -131,24 +131,45 @@ impl Resolver {
     /// Resolve the A records for `name` and synthesize AAAA answers from
     /// them. `None` when the A lookup fails or yields no addresses — the
     /// caller then returns the original (empty) AAAA answer unchanged.
-    /// The A re-query goes through `resolve`, so it benefits from (and
-    /// populates) the A cache entry; recursion is bounded because the
-    /// inner query has `rtype == A` and can never re-enter synthesis.
+    ///
+    /// Follows CNAME chains itself (bounded): a forwarded upstream that
+    /// doesn't chase — e.g. a plain authoritative server — returns just
+    /// the CNAME, and synthesis must still reach the terminal A records.
+    /// Each hop goes through `resolve`, so it benefits from (and
+    /// populates) the per-name A cache; re-entry into synthesis is
+    /// impossible because the inner queries have `rtype == A`.
     async fn dns64_synthesize(
         &self,
         name: &DnsName,
         rclass: RecordClass,
         prefix: std::net::Ipv6Addr,
     ) -> Option<Vec<crate::protocol::record::ResourceRecord>> {
-        let a_resp = Box::pin(self.resolve(name, RecordType::A, rclass)).await;
-        if a_resp.header.rcode != Rcode::NoError {
-            return None;
+        use crate::protocol::rdata::RData;
+
+        const MAX_CNAME_HOPS: usize = 8;
+        let mut chain: Vec<crate::protocol::record::ResourceRecord> = Vec::new();
+        let mut qname = name.clone();
+
+        for _ in 0..MAX_CNAME_HOPS {
+            let a_resp = Box::pin(self.resolve(&qname, RecordType::A, rclass)).await;
+            if a_resp.header.rcode != Rcode::NoError {
+                return None;
+            }
+            let records = synthesize_aaaa_records(&a_resp.answers, prefix);
+            if records.iter().any(|r| r.rtype == RecordType::AAAA) {
+                chain.extend(records);
+                return Some(chain);
+            }
+            // No A records in this hop — follow the terminal CNAME, if any.
+            let target = a_resp.answers.iter().rev().find_map(|rr| match &rr.rdata {
+                RData::CNAME(t) => Some(t.clone()),
+                _ => None,
+            })?;
+            // Keep the chain records (CNAMEs) for the final answer section.
+            chain.extend(records);
+            qname = target;
         }
-        let records = synthesize_aaaa_records(&a_resp.answers, prefix);
-        records
-            .iter()
-            .any(|r| r.rtype == RecordType::AAAA)
-            .then_some(records)
+        None
     }
 
     /// Enable DNS64 synthesis (RFC 6147) with the given /96 prefix.
