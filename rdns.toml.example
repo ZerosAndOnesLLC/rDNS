@@ -40,6 +40,11 @@ forwarders = []
 dnssec = true
 qname_minimization = true
 max_recursion_depth = 30
+# DNS64 (RFC 6147): synthesize AAAA from A records for v6-only clients
+# behind a NAT64 translator. dns64_prefix must match the translator's
+# prefix; only /96 is supported (default: the well-known 64:ff9b::/96).
+# dns64 = true
+# dns64_prefix = "64:ff9b::/96"
 
 [authoritative]
 # "zone-files" | "database" | "none"

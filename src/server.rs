@@ -87,6 +87,23 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         ServerMode::Authoritative => None,
     };
 
+    // DNS64 (RFC 6147): enable AAAA synthesis when configured. An invalid
+    // prefix logs an error and leaves DNS64 off rather than failing boot —
+    // the resolver still answers, just without synthesis.
+    let resolver = match (resolver, cfg.resolver.dns64) {
+        (Some(r), true) => match parse_dns64_prefix(&cfg.resolver.dns64_prefix) {
+            Some(prefix) => Some(r.with_dns64(prefix)),
+            None => {
+                tracing::error!(
+                    prefix = %cfg.resolver.dns64_prefix,
+                    "invalid dns64_prefix (expected an IPv6 address or addr/96); DNS64 disabled"
+                );
+                Some(r)
+            }
+        },
+        (r, _) => r,
+    };
+
     // Create authoritative engine (used in authoritative and both modes)
     let auth_engine = match cfg.server.mode {
         ServerMode::Authoritative | ServerMode::Both => {
@@ -293,4 +310,37 @@ async fn shutdown_signal() {
 
     #[cfg(not(unix))]
     ctrl_c.await.ok();
+}
+
+/// Parse a `dns64_prefix` config value: a bare IPv6 address or `addr/96`.
+/// Only /96 is supported (RFC 6052 well-known-prefix layout).
+fn parse_dns64_prefix(s: &str) -> Option<std::net::Ipv6Addr> {
+    let (addr, len) = match s.split_once('/') {
+        Some((a, l)) => (a, l),
+        None => (s, "96"),
+    };
+    if len.trim() != "96" {
+        return None;
+    }
+    addr.trim().parse().ok()
+}
+
+#[cfg(test)]
+mod dns64_config_tests {
+    use super::parse_dns64_prefix;
+
+    #[test]
+    fn parses_valid_prefixes_and_rejects_others() {
+        assert_eq!(
+            parse_dns64_prefix("64:ff9b::/96"),
+            Some("64:ff9b::".parse().unwrap())
+        );
+        assert_eq!(
+            parse_dns64_prefix("2001:db8:2::1"),
+            Some("2001:db8:2::1".parse().unwrap())
+        );
+        assert_eq!(parse_dns64_prefix("64:ff9b::/64"), None);
+        assert_eq!(parse_dns64_prefix("not-an-ip"), None);
+        assert_eq!(parse_dns64_prefix("10.0.0.1/96"), None);
+    }
 }

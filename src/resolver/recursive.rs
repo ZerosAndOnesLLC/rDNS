@@ -42,6 +42,8 @@ struct ResolverInner {
     forwarder_pool: OnceCell<ForwarderPool>,
     /// Per-domain forwarding rules (longest suffix match wins).
     forward_zones: Vec<ForwardZone>,
+    /// DNS64 (RFC 6147) synthesis prefix; `None` disables synthesis.
+    dns64_prefix: Option<std::net::Ipv6Addr>,
 }
 
 impl Resolver {
@@ -65,6 +67,7 @@ impl Resolver {
                 stale_answer_ttl,
                 forwarder_pool: OnceCell::new(),
                 forward_zones: Vec::new(),
+                dns64_prefix: None,
             }),
         }
     }
@@ -120,8 +123,44 @@ impl Resolver {
                 stale_answer_ttl,
                 forwarder_pool: OnceCell::new(),
                 forward_zones,
+                dns64_prefix: None,
             }),
         }
+    }
+
+    /// Resolve the A records for `name` and synthesize AAAA answers from
+    /// them. `None` when the A lookup fails or yields no addresses — the
+    /// caller then returns the original (empty) AAAA answer unchanged.
+    /// The A re-query goes through `resolve`, so it benefits from (and
+    /// populates) the A cache entry; recursion is bounded because the
+    /// inner query has `rtype == A` and can never re-enter synthesis.
+    async fn dns64_synthesize(
+        &self,
+        name: &DnsName,
+        rclass: RecordClass,
+        prefix: std::net::Ipv6Addr,
+    ) -> Option<Vec<crate::protocol::record::ResourceRecord>> {
+        let a_resp = Box::pin(self.resolve(name, RecordType::A, rclass)).await;
+        if a_resp.header.rcode != Rcode::NoError {
+            return None;
+        }
+        let records = synthesize_aaaa_records(&a_resp.answers, prefix);
+        records
+            .iter()
+            .any(|r| r.rtype == RecordType::AAAA)
+            .then_some(records)
+    }
+
+    /// Enable DNS64 synthesis (RFC 6147) with the given /96 prefix.
+    /// Builder-style; call right after construction (before any clone).
+    pub fn with_dns64(mut self, prefix: std::net::Ipv6Addr) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.dns64_prefix = Some(prefix);
+            tracing::info!(%prefix, "DNS64 synthesis enabled");
+        } else {
+            tracing::error!("with_dns64 called after the resolver was shared; DNS64 NOT enabled");
+        }
+        self
     }
 
     /// Find the best matching forward zone for a query name (longest suffix wins).
@@ -185,6 +224,28 @@ impl Resolver {
 
         match result {
             Ok(mut response) => {
+                // DNS64 (RFC 6147): an empty-NoError AAAA answer is
+                // re-resolved as A and synthesized into AAAA records. Runs
+                // BEFORE cache_response so the synthetic answer is cached
+                // positively under the AAAA key — otherwise the negative
+                // entry would suppress synthesis on every cache hit.
+                // NXDOMAIN is never synthesized.
+                // TODO: skip synthesis when the response is DNSSEC-Secure
+                // once cryptographic validation lands (the validator never
+                // returns Secure today).
+                if let Some(prefix) = self.inner.dns64_prefix
+                    && rtype == RecordType::AAAA
+                    && response.header.rcode == Rcode::NoError
+                    && response.answers.is_empty()
+                    && let Some(records) = self.dns64_synthesize(name, rclass, prefix).await
+                {
+                    tracing::debug!(name = %name, count = records.len(), "DNS64 synthesized AAAA");
+                    response.answers = records;
+                    // Drop the negative-answer SOA — this is a positive
+                    // answer now.
+                    response.authority.clear();
+                }
+
                 // DNSSEC validation
                 let status = self.inner.dnssec_validator.validate(&response);
                 DnssecValidator::set_ad_bit(&mut response, status);
@@ -545,9 +606,114 @@ fn is_in_bailiwick_authority(record_name: &DnsName, query_name: &DnsName) -> boo
     query_name.is_subdomain_of(record_name) || record_name == query_name
 }
 
+/// RFC 6052 §2.2: embed an IPv4 address in the low 32 bits of a /96 prefix.
+fn dns64_embed(prefix: std::net::Ipv6Addr, v4: std::net::Ipv4Addr) -> std::net::Ipv6Addr {
+    let mut octets = prefix.octets();
+    octets[12..16].copy_from_slice(&v4.octets());
+    std::net::Ipv6Addr::from(octets)
+}
+
+/// Transform an A answer set into a DNS64 AAAA answer set (RFC 6147 §5.1):
+/// CNAME chain records pass through unchanged, each A becomes a AAAA with
+/// the IPv4 embedded in `prefix`, and everything else is dropped. TTLs are
+/// preserved per record (the cache applies its usual min/max clamps).
+fn synthesize_aaaa_records(
+    answers: &[crate::protocol::record::ResourceRecord],
+    prefix: std::net::Ipv6Addr,
+) -> Vec<crate::protocol::record::ResourceRecord> {
+    use crate::protocol::rdata::RData;
+    use crate::protocol::record::ResourceRecord;
+    answers
+        .iter()
+        .filter_map(|rr| match &rr.rdata {
+            RData::A(v4) => Some(ResourceRecord {
+                name: rr.name.clone(),
+                rtype: RecordType::AAAA,
+                rclass: rr.rclass,
+                ttl: rr.ttl,
+                rdata: RData::AAAA(dns64_embed(prefix, *v4)),
+            }),
+            RData::CNAME(_) => Some(rr.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dns64_embed_well_known_prefix() {
+        let prefix: std::net::Ipv6Addr = "64:ff9b::".parse().unwrap();
+        assert_eq!(
+            dns64_embed(prefix, "192.0.2.33".parse().unwrap()),
+            "64:ff9b::c000:221".parse::<std::net::Ipv6Addr>().unwrap()
+        );
+        assert_eq!(
+            dns64_embed(prefix, "10.99.2.2".parse().unwrap()),
+            "64:ff9b::a63:202".parse::<std::net::Ipv6Addr>().unwrap()
+        );
+        // network-specific prefix keeps its upper 96 bits
+        let nsp: std::net::Ipv6Addr = "2001:db8:2::".parse().unwrap();
+        assert_eq!(
+            dns64_embed(nsp, "10.99.1.1".parse().unwrap()),
+            "2001:db8:2::a63:101".parse::<std::net::Ipv6Addr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_dns64_synthesize_records() {
+        use crate::protocol::rdata::RData;
+        use crate::protocol::record::ResourceRecord;
+
+        let prefix: std::net::Ipv6Addr = "64:ff9b::".parse().unwrap();
+        let name = DnsName::from_str("v4only.example.com").unwrap();
+        let cname_target = DnsName::from_str("origin.example.com").unwrap();
+        let answers = vec![
+            ResourceRecord {
+                name: name.clone(),
+                rtype: RecordType::CNAME,
+                rclass: RecordClass::IN,
+                ttl: 120,
+                rdata: RData::CNAME(cname_target.clone()),
+            },
+            ResourceRecord {
+                name: cname_target.clone(),
+                rtype: RecordType::A,
+                rclass: RecordClass::IN,
+                ttl: 60,
+                rdata: RData::A("192.0.2.7".parse().unwrap()),
+            },
+            // Non-address record in the answer set must be dropped, not
+            // passed through into a AAAA answer.
+            ResourceRecord {
+                name: cname_target.clone(),
+                rtype: RecordType::TXT,
+                rclass: RecordClass::IN,
+                ttl: 60,
+                rdata: RData::TXT(vec![b"x".to_vec()]),
+            },
+        ];
+
+        let out = synthesize_aaaa_records(&answers, prefix);
+        assert_eq!(out.len(), 2, "CNAME passthrough + one synthesized AAAA");
+        assert_eq!(out[0].rtype, RecordType::CNAME);
+        assert_eq!(out[1].rtype, RecordType::AAAA);
+        assert_eq!(out[1].ttl, 60, "AAAA keeps the A record's TTL");
+        match &out[1].rdata {
+            RData::AAAA(v6) => assert_eq!(
+                *v6,
+                "64:ff9b::c000:207".parse::<std::net::Ipv6Addr>().unwrap()
+            ),
+            other => panic!("expected AAAA rdata, got {other:?}"),
+        }
+
+        // A CNAME-only answer set synthesizes nothing usable.
+        let cname_only = vec![answers[0].clone()];
+        let out = synthesize_aaaa_records(&cname_only, prefix);
+        assert!(out.iter().all(|r| r.rtype != RecordType::AAAA));
+    }
 
     #[test]
     fn test_resolver_creation() {
