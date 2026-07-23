@@ -154,6 +154,18 @@ pub struct ResolverConfig {
     #[serde(default)]
     pub forward_zones: Vec<ForwardZoneConfig>,
 
+    /// DNS64 (RFC 6147): when a AAAA query yields an empty NoError answer,
+    /// re-resolve the name for A and synthesize AAAA records by embedding
+    /// the IPv4 in `dns64_prefix` (RFC 6052). Pair with a NAT64 translator
+    /// configured for the same prefix.
+    #[serde(default)]
+    pub dns64: bool,
+
+    /// IPv6 prefix used for DNS64 synthesis, `addr` or `addr/96` form.
+    /// Default: the well-known prefix `64:ff9b::/96`. Only /96 is supported.
+    #[serde(default = "default_dns64_prefix")]
+    pub dns64_prefix: String,
+
     /// Wall-clock ceiling for a single client query's resolution. Applied
     /// uniformly across UDP/TCP/DoT listeners. Zero or unset → built-in
     /// per-transport defaults (UDP 3s, TCP/DoT 30s). Clients that time out
@@ -291,6 +303,9 @@ fn default_true() -> bool {
 fn default_max_recursion_depth() -> u8 {
     30
 }
+fn default_dns64_prefix() -> String {
+    "64:ff9b::/96".to_string() // RFC 6052 well-known prefix
+}
 fn default_auth_source() -> AuthSource {
     AuthSource::None
 }
@@ -347,6 +362,8 @@ impl Default for ResolverConfig {
             qname_minimization: true,
             max_recursion_depth: 30,
             forward_zones: Vec::new(),
+            dns64: false,
+            dns64_prefix: default_dns64_prefix(),
             query_timeout_ms: 0,
         }
     }

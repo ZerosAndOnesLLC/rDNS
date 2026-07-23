@@ -48,8 +48,16 @@ impl InstanceLock {
 
 /// Acquire an exclusive lock on `/var/run/<name>.lock`. Returns
 /// `AlreadyRunning(pid)` if held. The lock auto-releases on process death.
+///
+/// `RDNS_LOCK_PATH` overrides the lockfile location — required to run
+/// more than one instance on a host (e.g. the AiFw t10 DNS64 harness runs
+/// an authoritative upstream and a front resolver side by side). The
+/// default path keeps the rc.d double-start protection for appliances.
 pub fn acquire(name: &str) -> Result<InstanceLock, InstanceLockError> {
-    acquire_at(&PathBuf::from(format!("/var/run/{name}.lock")))
+    match std::env::var("RDNS_LOCK_PATH") {
+        Ok(p) if !p.is_empty() => acquire_at(&PathBuf::from(p)),
+        _ => acquire_at(&PathBuf::from(format!("/var/run/{name}.lock"))),
+    }
 }
 
 /// Like `acquire` but takes an explicit path (used by tests).

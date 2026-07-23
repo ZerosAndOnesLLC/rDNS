@@ -4,6 +4,17 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **DNS64 (RFC 6147).** New `[resolver] dns64` / `dns64_prefix` options: when
+  a AAAA query returns an empty NoError answer, the resolver re-resolves the
+  name for A and synthesizes AAAA records by embedding the IPv4 in the
+  configured /96 prefix (RFC 6052; default `64:ff9b::/96`). CNAME chains pass
+  through, NXDOMAIN is never synthesized, and the synthetic answer is cached
+  positively under the AAAA key. Pair with a NAT64 translator (e.g. AiFw's
+  pf af-to NAT64 rules) using the same prefix.
+
 ## [1.17.20] - 2026-07-08
 
 First crates.io release since 1.17.11 — bundles every change from 1.17.12
