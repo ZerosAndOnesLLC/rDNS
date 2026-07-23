@@ -224,8 +224,14 @@ impl Resolver {
 
         match result {
             Ok(mut response) => {
-                // DNS64 (RFC 6147): an empty-NoError AAAA answer is
-                // re-resolved as A and synthesized into AAAA records. Runs
+                // DNS64 (RFC 6147): a NoError AAAA answer with no AAAA
+                // records is re-resolved as A and synthesized. The gate is
+                // "no AAAA present", NOT "answers empty" — a name that
+                // CNAMEs to a v4-only target returns the CNAME chain in
+                // the answer section (RFC 6147 §5.1.6 still requires
+                // synthesis there, and that shape is most CDN-hosted
+                // sites). The A re-query follows the same chain, so the
+                // synthesized set carries chain + AAAA records. Runs
                 // BEFORE cache_response so the synthetic answer is cached
                 // positively under the AAAA key — otherwise the negative
                 // entry would suppress synthesis on every cache hit.
@@ -236,7 +242,10 @@ impl Resolver {
                 if let Some(prefix) = self.inner.dns64_prefix
                     && rtype == RecordType::AAAA
                     && response.header.rcode == Rcode::NoError
-                    && response.answers.is_empty()
+                    && !response
+                        .answers
+                        .iter()
+                        .any(|r| r.rtype == RecordType::AAAA)
                     && let Some(records) = self.dns64_synthesize(name, rclass, prefix).await
                 {
                     tracing::debug!(name = %name, count = records.len(), "DNS64 synthesized AAAA");
