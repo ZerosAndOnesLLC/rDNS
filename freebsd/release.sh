@@ -84,15 +84,39 @@ ${SHA_LINE}
 \`\`\`"
 
 # --- Create or update GitHub release ---
+# Pre-release by default, from the very first API call — mirrors AiFw's
+# release gate. Anything consuming rDNS releases (or a human grabbing
+# "latest") should only ever see builds that were deliberately promoted:
+#     gh release edit <tag> --prerelease=false --latest
+# Set RDNS_RELEASE_FINAL=1 to cut a stable release directly.
+if [ -n "${RDNS_RELEASE_FINAL:-}" ]; then
+    CREATE_PRE=""                 # omit --prerelease -> stable, becomes latest
+    EDIT_PRE="--prerelease=false"
+    echo "Publishing STABLE release (RDNS_RELEASE_FINAL set)."
+else
+    CREATE_PRE="--prerelease"
+    EDIT_PRE="--prerelease=true"
+    echo "Publishing PRE-RELEASE (default). Promote after testing with:"
+    echo "    gh release edit ${TAG} --prerelease=false --latest"
+fi
+
 echo ""
 echo "Creating GitHub release ${TAG}..."
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release ${TAG} exists, uploading assets..."
+    # Flag first, upload after: assets must never sit on a stable release
+    # mid-upload. Strict — abort before any asset lands if it can't apply.
+    if [ -z "${RDNS_RELEASE_FINAL:-}" ]; then
+        gh release edit "$TAG" --prerelease=true
+    fi
     gh release upload "$TAG" "$TARBALL" "$TARBALL_SHA" --clobber
-    gh release edit "$TAG" --draft=false --title "rDNS v${VERSION}" --notes "$BODY" 2>/dev/null || true
+    # Publish last; the stable flip (if FINAL) lands only once assets are
+    # complete.
+    gh release edit "$TAG" --draft=false $EDIT_PRE --title "rDNS v${VERSION}" --notes "$BODY" 2>/dev/null || true
 else
     gh release create "$TAG" \
         "$TARBALL" "$TARBALL_SHA" \
+        $CREATE_PRE \
         --title "rDNS v${VERSION}" \
         --notes "$BODY"
 fi
