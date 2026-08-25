@@ -4,7 +4,15 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.17.22] - 2026-08-24
+
+### Changed
+- Dependency refresh: updated `Cargo.lock` to the latest compatible releases
+  (rustls 0.23.43, rustls-webpki 0.103.15, aws-lc-rs 1.18.0, thiserror 2.0.20,
+  clap 4.6.6, tokio 1.53.1, and the futures 0.3.34 / icu 2.3 families, among
+  others). No source changes.
+
+## [1.17.21] - 2026-07-28
 
 ### Added
 - **DNS64 (RFC 6147).** New `[resolver] dns64` / `dns64_prefix` options: when
@@ -14,6 +22,10 @@ All notable changes to rDNS are documented in this file. The format is based on
   through, NXDOMAIN is never synthesized, and the synthetic answer is cached
   positively under the AAAA key. Pair with a NAT64 translator (e.g. AiFw's
   pf af-to NAT64 rules) using the same prefix.
+- `RDNS_LOCK_PATH` env var to override the singleton lock file location.
+
+### Changed
+- Updated rustls-pki-types to 1.15.
 
 ## [1.17.20] - 2026-07-08
 
