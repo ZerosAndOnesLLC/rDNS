@@ -4,6 +4,14 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.17.23] - 2026-09-14
+
+### Changed
+- Dependency refresh: updated `Cargo.lock` to the latest compatible releases
+  (rustls 0.23.45, aws-lc-rs 1.18.1, aws-lc-sys 0.45.0, clap 4.6.7,
+  toml 1.1.6, tokio-rustls 0.26.5, smallvec 1.16.1, tinyvec 1.13.3, among
+  others). No source changes.
+
 ## [1.17.22] - 2026-08-24
 
 ### Changed
