@@ -31,20 +31,8 @@ pub fn parse_zone_str(content: &str, origin: &DnsName) -> Result<Zone, ParseErro
     let mut records: Vec<ResourceRecord> = Vec::new();
     let mut soa: Option<(SoaData, u32)> = None;
 
-    for (line_num, raw_line) in content.lines().enumerate() {
-        let line_num = line_num + 1; // 1-indexed
-
-        // Strip comments
-        let line = if let Some(idx) = raw_line.find(';') {
-            &raw_line[..idx]
-        } else {
-            raw_line
-        };
-
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
+    for (line_num, line) in logical_lines(content)? {
+        let line = line.as_str();
 
         // Handle directives
         if line.starts_with("$ORIGIN") {
@@ -120,6 +108,76 @@ pub fn parse_zone_str(content: &str, origin: &DnsName) -> Result<Zone, ParseErro
     }
 
     Ok(zone)
+}
+
+/// Split zone content into logical records, returned with the 1-indexed line
+/// each record starts on. Comments are stripped and parenthesized groups
+/// (RFC 1035 §5.1) are joined onto one line. `;`, `(` and `)` inside quoted
+/// strings are literal, so TXT data such as `"v=DKIM1; k=rsa"` survives.
+fn logical_lines(content: &str) -> Result<Vec<(usize, String)>, ParseError> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut start_line = 0;
+    let mut depth = 0usize;
+
+    for (idx, raw_line) in content.lines().enumerate() {
+        let line_num = idx + 1;
+        if depth == 0 {
+            start_line = line_num;
+        } else {
+            buf.push(' ');
+        }
+
+        let mut in_quotes = false;
+        let mut escaped = false;
+        for ch in raw_line.chars() {
+            if escaped {
+                buf.push(ch);
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => {
+                    buf.push(ch);
+                    escaped = true;
+                }
+                '"' => {
+                    buf.push(ch);
+                    in_quotes = !in_quotes;
+                }
+                ';' if !in_quotes => break,
+                '(' if !in_quotes => {
+                    depth += 1;
+                    buf.push(' ');
+                }
+                ')' if !in_quotes => {
+                    depth = depth.checked_sub(1).ok_or_else(|| ParseError::Syntax {
+                        line: line_num,
+                        message: "unmatched ')'".into(),
+                    })?;
+                    buf.push(' ');
+                }
+                _ => buf.push(ch),
+            }
+        }
+
+        if depth == 0 {
+            let line = buf.trim_end();
+            if !line.trim_start().is_empty() {
+                out.push((start_line, line.to_string()));
+            }
+            buf.clear();
+        }
+    }
+
+    if depth > 0 {
+        return Err(ParseError::Syntax {
+            line: start_line,
+            message: "unclosed '('".into(),
+        });
+    }
+
+    Ok(out)
 }
 
 /// Parse RR tokens into components: (name, ttl, class, type, rdata_tokens)
@@ -510,6 +568,80 @@ ns1 A   192.0.2.1
 
         let ns1 = DnsName::from_str("ns1.example.com").unwrap();
         assert!(zone.lookup(&ns1, RecordType::A).is_some());
+    }
+
+    #[test]
+    fn test_parse_multiline_soa() {
+        let zone_content = r#"
+$TTL 3600
+$ORIGIN example.com.
+@   IN  SOA ns1.example.com. admin.example.com. (
+        2024010101  ; Serial
+        3600        ; Refresh
+        900         ; Retry
+        604800      ; Expire
+        300         ; Negative TTL
+    )
+@   IN  NS  ns1.example.com.
+ns1 IN  A   192.0.2.1
+"#;
+        let origin = DnsName::from_str("example.com").unwrap();
+        let zone = parse_zone_str(zone_content, &origin).unwrap();
+
+        assert_eq!(zone.soa.serial, 2024010101);
+        assert_eq!(zone.soa.refresh, 3600);
+        assert_eq!(zone.soa.retry, 900);
+        assert_eq!(zone.soa.expire, 604800);
+        assert_eq!(zone.soa.minimum, 300);
+        let ns1 = DnsName::from_str("ns1.example.com").unwrap();
+        assert!(zone.lookup(&ns1, RecordType::A).is_some());
+    }
+
+    #[test]
+    fn test_parse_semicolon_and_parens_inside_quotes() {
+        let zone_content = r#"
+@   IN  SOA ns1 admin 1 3600 900 604800 300
+sel._domainkey IN TXT ( "v=DKIM1; k=rsa; "
+                        "p=MIGf(abc)" ) ; trailing comment
+"#;
+        let origin = DnsName::from_str("example.com").unwrap();
+        let zone = parse_zone_str(zone_content, &origin).unwrap();
+
+        let name = DnsName::from_str("sel._domainkey.example.com").unwrap();
+        let rrset = zone.lookup(&name, RecordType::TXT).unwrap();
+        match &rrset.records[0].rdata {
+            RData::TXT(strings) => {
+                assert_eq!(strings[0], b"v=DKIM1; k=rsa; ".to_vec());
+                assert_eq!(strings[1], b"p=MIGf(abc)".to_vec());
+            }
+            other => panic!("expected TXT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_logical_lines_reports_start_line() {
+        let lines =
+            logical_lines("; header\n\na IN A 192.0.2.1\nb IN SOA ns1 admin (\n 1 2 3 4 5 )\n")
+                .unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].0, 3);
+        assert_eq!(lines[1].0, 4);
+        assert!(lines[1].1.contains("1 2 3 4 5"));
+    }
+
+    #[test]
+    fn test_unbalanced_parens_are_errors() {
+        let origin = DnsName::from_str("example.com").unwrap();
+        let unclosed = "@ IN SOA ns1 admin (\n 1 3600 900 604800 300\n";
+        assert!(matches!(
+            parse_zone_str(unclosed, &origin),
+            Err(ParseError::Syntax { line: 1, .. })
+        ));
+        let stray = "@ IN SOA ns1 admin 1 3600 900 604800 300 )\n";
+        assert!(matches!(
+            parse_zone_str(stray, &origin),
+            Err(ParseError::Syntax { line: 1, .. })
+        ));
     }
 
     #[test]
