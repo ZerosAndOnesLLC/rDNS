@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(name = "rdns", about = "High-performance DNS server")]
+#[command(name = "rdns", version, about = "High-performance DNS server")]
 struct Args {
     /// Path to configuration file
     #[arg(short, long, default_value = "/etc/rdns/rdns.toml")]
