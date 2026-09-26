@@ -4,6 +4,15 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Codebase is now clean under `cargo fmt --check` and
+  `cargo clippy --all-targets --all-features -- -D warnings`.
+- TCP and DNS-over-TLS listeners take a shared `StreamContext` instead of
+  separate engine handles; each accepted connection now clones one `Arc`
+  rather than five handles. No behavior change.
+
 ## [1.17.24] - 2026-09-26
 
 ### Changed

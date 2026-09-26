@@ -97,10 +97,10 @@ pub fn parse_zone_str(content: &str, origin: &DnsName) -> Result<Zone, ParseErro
             })?;
 
         // Capture SOA
-        if rtype == RecordType::SOA {
-            if let RData::SOA(ref soa_data) = rdata {
-                soa = Some((soa_data.clone(), ttl));
-            }
+        if rtype == RecordType::SOA
+            && let RData::SOA(ref soa_data) = rdata
+        {
+            soa = Some((soa_data.clone(), ttl));
         }
 
         records.push(ResourceRecord {
@@ -153,24 +153,23 @@ fn parse_rr_tokens<'a>(
     let mut rclass = RecordClass::IN;
 
     // Try TTL then class, or class then TTL
-    if idx < tokens.len() {
-        if let Ok(t) = parse_ttl(tokens[idx]) {
-            ttl = t;
-            idx += 1;
-        }
+    if idx < tokens.len()
+        && let Ok(t) = parse_ttl(tokens[idx])
+    {
+        ttl = t;
+        idx += 1;
     }
     if idx < tokens.len() && is_class(tokens[idx]) {
         rclass = parse_class(tokens[idx]);
         idx += 1;
     }
-    if idx < tokens.len() {
-        if let Ok(t) = parse_ttl(tokens[idx]) {
-            if ttl == default_ttl {
-                // Only override if we haven't already parsed a TTL
-                ttl = t;
-                idx += 1;
-            }
-        }
+    if idx < tokens.len()
+        && let Ok(t) = parse_ttl(tokens[idx])
+        && ttl == default_ttl
+    {
+        // Only override if we haven't already parsed a TTL
+        ttl = t;
+        idx += 1;
     }
 
     // Record type
@@ -248,10 +247,10 @@ fn parse_rdata(rtype: RecordType, tokens: &[&str], origin: &DnsName) -> Result<R
             let mname = resolve_name(tokens[0], origin).map_err(|e| format!("{}", e))?;
             let rname = resolve_name(tokens[1], origin).map_err(|e| format!("{}", e))?;
             let serial: u32 = tokens[2].parse().map_err(|e| format!("{}", e))?;
-            let refresh: u32 = parse_ttl(tokens[3]).map_err(|e| format!("{}", e))?;
-            let retry: u32 = parse_ttl(tokens[4]).map_err(|e| format!("{}", e))?;
-            let expire: u32 = parse_ttl(tokens[5]).map_err(|e| format!("{}", e))?;
-            let minimum: u32 = parse_ttl(tokens[6]).map_err(|e| format!("{}", e))?;
+            let refresh: u32 = parse_ttl(tokens[3]).map_err(|e| e.to_string())?;
+            let retry: u32 = parse_ttl(tokens[4]).map_err(|e| e.to_string())?;
+            let expire: u32 = parse_ttl(tokens[5]).map_err(|e| e.to_string())?;
+            let minimum: u32 = parse_ttl(tokens[6]).map_err(|e| e.to_string())?;
             Ok(RData::SOA(SoaData {
                 mname,
                 rname,
@@ -411,7 +410,8 @@ fn parse_ttl(s: &str) -> Result<u32, String> {
 
     for ch in s.chars() {
         if ch.is_ascii_digit() {
-            current = current.checked_mul(10)
+            current = current
+                .checked_mul(10)
                 .and_then(|v| v.checked_add(ch.to_digit(10).unwrap()))
                 .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
         } else {
@@ -423,14 +423,17 @@ fn parse_ttl(s: &str) -> Result<u32, String> {
                 'w' => 604800,
                 _ => return Err(format!("invalid TTL suffix: {}", ch)),
             };
-            let product = current.checked_mul(multiplier)
+            let product = current
+                .checked_mul(multiplier)
                 .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
-            total = total.checked_add(product)
+            total = total
+                .checked_add(product)
                 .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
             current = 0;
         }
     }
-    total = total.checked_add(current)
+    total = total
+        .checked_add(current)
         .ok_or_else(|| format!("TTL value overflow in '{}'", s))?;
 
     Ok(total.min(MAX_TTL))

@@ -34,7 +34,9 @@ impl DnssecValidator {
 
         // DNSSEC cryptographic signature verification is not yet implemented.
         // Return Indeterminate for all signed responses to avoid false security.
-        tracing::debug!("DNSSEC validation not implemented — treating signed response as Indeterminate");
+        tracing::debug!(
+            "DNSSEC validation not implemented — treating signed response as Indeterminate"
+        );
         ValidationStatus::Indeterminate
     }
 

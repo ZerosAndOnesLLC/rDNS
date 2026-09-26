@@ -10,7 +10,8 @@ pub fn root_trust_anchors() -> Vec<TrustAnchor> {
         TrustAnchor {
             key_tag: 20326,
             algorithm: Algorithm::RsaSha256,
-            digest_hex: "E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D".to_string(),
+            digest_hex: "E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D"
+                .to_string(),
         },
     ]
 }

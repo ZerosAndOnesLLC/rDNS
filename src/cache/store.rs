@@ -1,7 +1,7 @@
 use super::entry::{CacheEntry, CacheKey};
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Sharded concurrent DNS cache with TTL-based eviction.
@@ -116,7 +116,9 @@ impl CacheStore {
     pub fn flush(&self) {
         let count = self.inner.map.len();
         self.inner.map.clear();
-        self.inner.evictions.fetch_add(count as u64, Ordering::Relaxed);
+        self.inner
+            .evictions
+            .fetch_add(count as u64, Ordering::Relaxed);
     }
 
     /// Flush all entries matching a domain name (any type/class).
@@ -207,7 +209,14 @@ mod tests {
             ttl,
             rdata: RData::A(ip),
         };
-        CacheEntry::new(vec![rr], vec![], vec![], ttl, false, crate::protocol::rcode::Rcode::NoError)
+        CacheEntry::new(
+            vec![rr],
+            vec![],
+            vec![],
+            ttl,
+            false,
+            crate::protocol::rcode::Rcode::NoError,
+        )
     }
 
     #[test]
@@ -309,8 +318,8 @@ mod tests {
         let entry = make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
 
         store.insert(key.clone(), entry);
-        store.lookup(&key);       // hit
-        store.lookup(&key);       // hit
+        store.lookup(&key); // hit
+        store.lookup(&key); // hit
         store.lookup(&make_key("miss.com")); // miss
 
         let stats = store.stats();

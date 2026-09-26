@@ -3,16 +3,16 @@
 #[repr(u8)]
 pub enum Rcode {
     NoError = 0,
-    FormErr = 1,   // Format error
-    ServFail = 2,  // Server failure
-    NxDomain = 3,  // Name does not exist
-    NotImp = 4,    // Not implemented
-    Refused = 5,   // Query refused
-    YxDomain = 6,  // Name exists when it should not
-    YxRrset = 7,   // RR set exists when it should not
-    NxRrset = 8,   // RR set does not exist when it should
-    NotAuth = 9,   // Not authorized
-    NotZone = 10,  // Name not in zone
+    FormErr = 1,  // Format error
+    ServFail = 2, // Server failure
+    NxDomain = 3, // Name does not exist
+    NotImp = 4,   // Not implemented
+    Refused = 5,  // Query refused
+    YxDomain = 6, // Name exists when it should not
+    YxRrset = 7,  // RR set exists when it should not
+    NxRrset = 8,  // RR set does not exist when it should
+    NotAuth = 9,  // Not authorized
+    NotZone = 10, // Name not in zone
     Unknown(u8),
 }
 

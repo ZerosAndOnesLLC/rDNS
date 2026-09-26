@@ -1,5 +1,5 @@
-use crate::cache::entry::{CacheEntry, CacheKey};
 use crate::cache::CacheStore;
+use crate::cache::entry::{CacheEntry, CacheKey};
 use crate::config::ForwardZoneConfig;
 use crate::dnssec::DnssecValidator;
 use crate::protocol::message::Message;
@@ -189,9 +189,11 @@ impl Resolver {
         let qname = name.to_dotted().to_lowercase();
         let mut best: Option<(usize, &[SocketAddr])> = None;
         for fz in &self.inner.forward_zones {
-            if qname.ends_with(&fz.suffix) || qname.trim_end_matches('.') == fz.suffix.trim_end_matches('.') {
+            if qname.ends_with(&fz.suffix)
+                || qname.trim_end_matches('.') == fz.suffix.trim_end_matches('.')
+            {
                 let len = fz.suffix.len();
-                if best.map_or(true, |(bl, _)| len > bl) {
+                if best.is_none_or(|(bl, _)| len > bl) {
                     best = Some((len, &fz.servers));
                 }
             }
@@ -221,12 +223,7 @@ impl Resolver {
     }
 
     /// Resolve a DNS query. Checks cache first, then resolves recursively or forwards.
-    pub async fn resolve(
-        &self,
-        name: &DnsName,
-        rtype: RecordType,
-        rclass: RecordClass,
-    ) -> Message {
+    pub async fn resolve(&self, name: &DnsName, rtype: RecordType, rclass: RecordClass) -> Message {
         // Check cache
         let key = CacheKey::new(name.clone(), rtype, rclass);
         if let Some(entry) = self.inner.cache.lookup(&key) {
@@ -263,10 +260,7 @@ impl Resolver {
                 if let Some(prefix) = self.inner.dns64_prefix
                     && rtype == RecordType::AAAA
                     && response.header.rcode == Rcode::NoError
-                    && !response
-                        .answers
-                        .iter()
-                        .any(|r| r.rtype == RecordType::AAAA)
+                    && !response.answers.iter().any(|r| r.rtype == RecordType::AAAA)
                     && let Some(records) = self.dns64_synthesize(name, rclass, prefix).await
                 {
                     tracing::debug!(name = %name, count = records.len(), "DNS64 synthesized AAAA");
@@ -425,12 +419,18 @@ impl Resolver {
             loop {
                 let mut grew = false;
                 for rr in &response.answers {
-                    if !set.contains(&rr.name) { continue; }
-                    if let crate::protocol::rdata::RData::CNAME(target) = &rr.rdata {
-                        if set.insert(target.clone()) { grew = true; }
+                    if !set.contains(&rr.name) {
+                        continue;
+                    }
+                    if let crate::protocol::rdata::RData::CNAME(target) = &rr.rdata
+                        && set.insert(target.clone())
+                    {
+                        grew = true;
                     }
                 }
-                if !grew { break; }
+                if !grew {
+                    break;
+                }
             }
             set
         };
@@ -462,7 +462,14 @@ impl Resolver {
             .cloned()
             .collect();
 
-        let entry = CacheEntry::new(answers, authority, additional, ttl, negative, negative_rcode);
+        let entry = CacheEntry::new(
+            answers,
+            authority,
+            additional,
+            ttl,
+            negative,
+            negative_rcode,
+        );
 
         self.inner.cache.insert(key.clone(), entry);
     }
@@ -583,12 +590,7 @@ impl Resolver {
         }
     }
 
-    fn build_servfail(
-        &self,
-        name: &DnsName,
-        rtype: RecordType,
-        rclass: RecordClass,
-    ) -> Message {
+    fn build_servfail(&self, name: &DnsName, rtype: RecordType, rclass: RecordClass) -> Message {
         use crate::protocol::header::Header;
         use crate::protocol::opcode::Opcode;
         use crate::protocol::record::Question;
@@ -776,10 +778,20 @@ mod tests {
         let target = DnsName::from_str("pkgmir.geo.freebsd.org").unwrap();
         let response = Message {
             header: Header {
-                id: 1, qr: true, opcode: Opcode::Query,
-                aa: false, tc: false, rd: true, ra: true,
-                ad: false, cd: false, rcode: Rcode::NoError,
-                qd_count: 1, an_count: 2, ns_count: 0, ar_count: 0,
+                id: 1,
+                qr: true,
+                opcode: Opcode::Query,
+                aa: false,
+                tc: false,
+                rd: true,
+                ra: true,
+                ad: false,
+                cd: false,
+                rcode: Rcode::NoError,
+                qd_count: 1,
+                an_count: 2,
+                ns_count: 0,
+                ar_count: 0,
             },
             questions: vec![Question {
                 name: qname.clone(),
@@ -811,9 +823,18 @@ mod tests {
         resolver.cache_response(&key, &response);
 
         let entry = cache.lookup(&key).expect("entry should be cached");
-        assert_eq!(entry.answers.len(), 2, "both CNAME and chained A must be cached");
-        assert!(entry.answers.iter().any(|rr| matches!(rr.rdata, RData::A(_))),
-            "chained A record must survive bailiwick filtering");
+        assert_eq!(
+            entry.answers.len(),
+            2,
+            "both CNAME and chained A must be cached"
+        );
+        assert!(
+            entry
+                .answers
+                .iter()
+                .any(|rr| matches!(rr.rdata, RData::A(_))),
+            "chained A record must survive bailiwick filtering"
+        );
     }
 
     /// Cached positive answers should ship without authority/additional —
@@ -863,8 +884,14 @@ mod tests {
 
         let msg = resolver.build_cached_response(&qname, RecordType::A, RecordClass::IN, &entry);
         assert_eq!(msg.answers.len(), 1);
-        assert!(msg.authority.is_empty(), "positive response must drop authority");
-        assert!(msg.additional.is_empty(), "positive response must drop additional");
+        assert!(
+            msg.authority.is_empty(),
+            "positive response must drop authority"
+        );
+        assert!(
+            msg.additional.is_empty(),
+            "positive response must drop additional"
+        );
     }
 
     /// Negative cached responses need the SOA in authority so downstream
@@ -891,7 +918,11 @@ mod tests {
                 rdata: RData::SOA(SoaData {
                     mname: DnsName::from_str("ns.example.com").unwrap(),
                     rname: DnsName::from_str("admin.example.com").unwrap(),
-                    serial: 1, refresh: 3600, retry: 900, expire: 604800, minimum: 300,
+                    serial: 1,
+                    refresh: 3600,
+                    retry: 900,
+                    expire: 604800,
+                    minimum: 300,
                 }),
             }],
             additional: vec![],
@@ -905,7 +936,11 @@ mod tests {
 
         let msg = resolver.build_cached_response(&qname, RecordType::A, RecordClass::IN, &entry);
         assert!(msg.answers.is_empty());
-        assert_eq!(msg.authority.len(), 1, "negative response must keep SOA for RFC 2308");
+        assert_eq!(
+            msg.authority.len(),
+            1,
+            "negative response must keep SOA for RFC 2308"
+        );
         assert!(matches!(msg.authority[0].rdata, RData::SOA(_)));
         assert!(msg.additional.is_empty());
     }

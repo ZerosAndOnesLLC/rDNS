@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -452,8 +452,7 @@ impl Config {
 /// must be bound to a `main`-lifetime variable (drop = flush + shutdown).
 #[must_use = "drop the returned guard only when the process exits — losing it stops log output"]
 pub fn init_logging(cfg: &LoggingConfig) -> WorkerGuard {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cfg.level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.level));
 
     let (writer, guard) = tracing_appender::non_blocking(std::io::stdout());
 
@@ -466,10 +465,7 @@ pub fn init_logging(cfg: &LoggingConfig) -> WorkerGuard {
                 .init();
         }
         LogFormat::Text => {
-            fmt()
-                .with_env_filter(filter)
-                .with_writer(writer)
-                .init();
+            fmt().with_env_filter(filter).with_writer(writer).init();
         }
     }
 

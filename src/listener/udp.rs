@@ -1,16 +1,16 @@
 use crate::auth::engine::{AuthEngine, AuthResult};
-use crate::cache::entry::CacheKey;
 use crate::cache::CacheStore;
+use crate::cache::entry::CacheKey;
 use crate::protocol::message::Message;
 use crate::resolver::Resolver;
 use crate::rpz::RpzEngine;
 use crate::security::acl::RecursionAcl;
 use crate::security::rate_limit::RateLimiter;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use parking_lot::Mutex;
 use tokio::net::UdpSocket;
 use tokio::sync::Semaphore;
 
@@ -35,11 +35,14 @@ const UDP_BATCH_SIZE: usize = 64;
 /// its own deadline rather than timing out on the user.
 const UDP_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// RRL bucket key: (source /24 prefix, qname hash, rcode).
+type RrlKey = (u32, u64, u8);
+
 /// Simple DNS Response Rate Limiting (RRL).
 /// Throttles identical responses to the same source prefix.
 struct ResponseRateLimiter {
     /// (source /24 prefix, qname hash, rcode) -> (count, window_start)
-    state: Mutex<HashMap<(u32, u64, u8), (u32, Instant)>>,
+    state: Mutex<HashMap<RrlKey, (u32, Instant)>>,
     /// Max identical responses per second per /24
     limit: u32,
 }
@@ -258,12 +261,18 @@ async fn recv_loop(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>) {
         };
 
         // Sync fast path: cache hit, auth, RPZ — no task spawn
-        if let Some(mut response) = try_handle_sync(&buf[..len], &ctx, recursion_allowed, client_edns.as_ref()) {
+        if let Some(mut response) =
+            try_handle_sync(&buf[..len], &ctx, recursion_allowed, client_edns.as_ref())
+        {
             if !response.is_empty() {
                 super::truncate_udp_response(&mut response, effective_size, server_opt.as_ref());
                 // RRL check before sending
                 let qname_hash = qname_hash_from_buf(&buf[..len]);
-                let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
+                let rcode = if response.len() >= 4 {
+                    response[3] & 0x0F
+                } else {
+                    0
+                };
                 if ctx.rrl.check(&src, qname_hash, rcode) {
                     let _ = socket.send_to(&response, src).await;
                     super::log_query(src, &buf[..len], &response, "udp");
@@ -382,12 +391,23 @@ async fn recv_loop_batched(socket: Arc<UdpSocket>, ctx: Arc<QueryContext>, batch
                 try_handle_sync(buf, &ctx, recursion_allowed, client_edns.as_ref())
             {
                 if !response.is_empty() {
-                    super::truncate_udp_response(&mut response, effective_size, server_opt.as_ref());
+                    super::truncate_udp_response(
+                        &mut response,
+                        effective_size,
+                        server_opt.as_ref(),
+                    );
                     let qname_hash = qname_hash_from_buf(buf);
-                    let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
+                    let rcode = if response.len() >= 4 {
+                        response[3] & 0x0F
+                    } else {
+                        0
+                    };
                     if ctx.rrl.check(&src, qname_hash, rcode) {
                         super::log_query(src, buf, &response, "udp");
-                        send_batch.push(SendPacket { data: response, dest: src });
+                        send_batch.push(SendPacket {
+                            data: response,
+                            dest: src,
+                        });
                     }
                 }
                 // Empty response = RPZ Drop — silently discard.
@@ -469,10 +489,10 @@ fn try_handle_sync(
     let (name, qtype, qclass, id, rd) = super::parse_query_fast(buf)?;
 
     // BADVERS short-circuit — no point consulting auth / cache / resolver.
-    if let Some(opt) = client_edns {
-        if opt.is_unsupported_version() {
-            return Some(super::build_badvers_fast(id, &name, qtype, qclass));
-        }
+    if let Some(opt) = client_edns
+        && opt.is_unsupported_version()
+    {
+        return Some(super::build_badvers_fast(id, &name, qtype, qclass));
     }
 
     // RPZ
@@ -481,13 +501,13 @@ fn try_handle_sync(
         if action == crate::rpz::policy::PolicyAction::Drop {
             return Some(Vec::new());
         }
-        if let Ok(query) = Message::decode(buf) {
-            if let Some(mut response) = ctx.rpz.apply_action(&action, &query) {
-                if client_edns.is_some() {
-                    response.edns = Some(super::server_edns_opt());
-                }
-                return Some(response.encode());
+        if let Ok(query) = Message::decode(buf)
+            && let Some(mut response) = ctx.rpz.apply_action(&action, &query)
+        {
+            if client_edns.is_some() {
+                response.edns = Some(super::server_edns_opt());
             }
+            return Some(response.encode());
         }
     }
 
@@ -508,19 +528,39 @@ fn try_handle_sync(
 
     // If recursion is not allowed, don't check cache from resolver or fall through to resolver
     if !recursion_allowed && ctx.resolver.is_some() {
-        return Some(super::build_refused_fast(id, rd, &name, qtype, qclass, client_edns));
+        return Some(super::build_refused_fast(
+            id,
+            rd,
+            &name,
+            qtype,
+            qclass,
+            client_edns,
+        ));
     }
 
     // Cache
     let key = CacheKey::new(name.clone(), qtype, qclass);
     if let Some(entry) = ctx.cache.lookup(&key) {
         return Some(super::build_cached_response_fast(
-            &entry, id, rd, &name, qtype, qclass, client_edns,
+            &entry,
+            id,
+            rd,
+            &name,
+            qtype,
+            qclass,
+            client_edns,
         ));
     }
 
     if ctx.resolver.is_none() {
-        return Some(super::build_servfail_fast(id, rd, &name, qtype, qclass, client_edns));
+        return Some(super::build_servfail_fast(
+            id,
+            rd,
+            &name,
+            qtype,
+            qclass,
+            client_edns,
+        ));
     }
 
     None
@@ -530,11 +570,16 @@ fn try_handle_sync(
 fn bind_reuseport(addr: SocketAddr) -> anyhow::Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
 
-    let domain = if addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
         .map_err(|e| anyhow::anyhow!("socket(): {}", e))?;
 
-    socket.set_nonblocking(true)
+    socket
+        .set_nonblocking(true)
         .map_err(|e| anyhow::anyhow!("set_nonblocking: {}", e))?;
     // O_CLOEXEC is set by default on Linux by socket2 >= 0.5.
 
@@ -542,7 +587,8 @@ fn bind_reuseport(addr: SocketAddr) -> anyhow::Result<UdpSocket> {
         tracing::warn!("Failed to set SO_REUSEADDR: {}", e);
     }
 
-    socket.set_reuse_port(true)
+    socket
+        .set_reuse_port(true)
         .map_err(|e| anyhow::anyhow!("SO_REUSEPORT not supported: {}", e))?;
 
     // Increase receive buffer for burst absorption
@@ -550,7 +596,8 @@ fn bind_reuseport(addr: SocketAddr) -> anyhow::Result<UdpSocket> {
         tracing::debug!("Could not set SO_RCVBUF to 4MB: {}", e);
     }
 
-    socket.bind(&addr.into())
+    socket
+        .bind(&addr.into())
         .map_err(|e| anyhow::anyhow!("bind(): {}", e))?;
 
     let std_socket: std::net::UdpSocket = socket.into();
@@ -596,12 +643,11 @@ fn udp_batch_setting() -> Option<usize> {
 /// `RDNS_UDP_WORKERS` to pin an exact count (e.g. to share a box with other
 /// services, or to match a specific core layout).
 fn udp_worker_count() -> usize {
-    if let Ok(v) = std::env::var("RDNS_UDP_WORKERS") {
-        if let Ok(n) = v.parse::<usize>() {
-            if n >= 1 {
-                return n.min(256);
-            }
-        }
+    if let Ok(v) = std::env::var("RDNS_UDP_WORKERS")
+        && let Ok(n) = v.parse::<usize>()
+        && n >= 1
+    {
+        return n.min(256);
     }
     (num_cpus() * 3 / 4).clamp(2, 32)
 }

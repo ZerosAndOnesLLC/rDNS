@@ -3,6 +3,8 @@ use super::record::RecordType;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Parsed RDATA for supported record types.
+// Variant names are the RFC mnemonics (AAAA, CNAME, SOA, ...), not Rust acronyms.
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RData {
     A(Ipv4Addr),
@@ -10,18 +12,27 @@ pub enum RData {
     NS(DnsName),
     CNAME(DnsName),
     PTR(DnsName),
-    MX { preference: u16, exchange: DnsName },
+    MX {
+        preference: u16,
+        exchange: DnsName,
+    },
     SOA(SoaData),
     TXT(Vec<Vec<u8>>),
     SRV(SrvData),
     CAA(CaaData),
     /// RFC 1035 HINFO (cpu, os). Also used for RFC 8482 ANY responses.
-    HINFO { cpu: Vec<u8>, os: Vec<u8> },
+    HINFO {
+        cpu: Vec<u8>,
+        os: Vec<u8>,
+    },
     /// RFC 9460 SVCB — also reused by HTTPS which differs only in type code.
     SVCB(SvcbData),
     HTTPS(SvcbData),
     /// Fallback for unsupported or DNSSEC types — stores raw bytes
-    Raw { type_code: u16, data: Vec<u8> },
+    Raw {
+        type_code: u16,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +103,12 @@ impl RData {
                 if rdlength != 4 {
                     return Err(RDataError::TooShort("A"));
                 }
-                let addr = Ipv4Addr::new(buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]);
+                let addr = Ipv4Addr::new(
+                    buf[offset],
+                    buf[offset + 1],
+                    buf[offset + 2],
+                    buf[offset + 3],
+                );
                 Ok(Self::A(addr))
             }
 
@@ -138,7 +154,10 @@ impl RData {
                 if 2 + consumed > rdlength {
                     return Err(RDataError::TooShort("MX"));
                 }
-                Ok(Self::MX { preference, exchange })
+                Ok(Self::MX {
+                    preference,
+                    exchange,
+                })
             }
 
             RecordType::SOA => {
@@ -154,11 +173,24 @@ impl RData {
                 if pos + 20 > rdata_end {
                     return Err(RDataError::TooShort("SOA"));
                 }
-                let serial = u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
-                let refresh = u32::from_be_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]);
-                let retry = u32::from_be_bytes([buf[pos + 8], buf[pos + 9], buf[pos + 10], buf[pos + 11]]);
-                let expire = u32::from_be_bytes([buf[pos + 12], buf[pos + 13], buf[pos + 14], buf[pos + 15]]);
-                let minimum = u32::from_be_bytes([buf[pos + 16], buf[pos + 17], buf[pos + 18], buf[pos + 19]]);
+                let serial =
+                    u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+                let refresh =
+                    u32::from_be_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]);
+                let retry =
+                    u32::from_be_bytes([buf[pos + 8], buf[pos + 9], buf[pos + 10], buf[pos + 11]]);
+                let expire = u32::from_be_bytes([
+                    buf[pos + 12],
+                    buf[pos + 13],
+                    buf[pos + 14],
+                    buf[pos + 15],
+                ]);
+                let minimum = u32::from_be_bytes([
+                    buf[pos + 16],
+                    buf[pos + 17],
+                    buf[pos + 18],
+                    buf[pos + 19],
+                ]);
                 Ok(Self::SOA(SoaData {
                     mname,
                     rname,
@@ -199,7 +231,12 @@ impl RData {
                 if 6 + consumed > rdlength {
                     return Err(RDataError::TooShort("SRV"));
                 }
-                Ok(Self::SRV(SrvData { priority, weight, port, target }))
+                Ok(Self::SRV(SrvData {
+                    priority,
+                    weight,
+                    port,
+                    target,
+                }))
             }
 
             RecordType::CAA => {
@@ -252,7 +289,11 @@ impl RData {
                 }
                 let params_start = offset + 2 + consumed;
                 let params = buf[params_start..rdata_end].to_vec();
-                let data = SvcbData { priority, target, params };
+                let data = SvcbData {
+                    priority,
+                    target,
+                    params,
+                };
                 Ok(match rtype {
                     RecordType::HTTPS => Self::HTTPS(data),
                     _ => Self::SVCB(data),
@@ -282,7 +323,10 @@ impl RData {
             Self::NS(name) | Self::CNAME(name) | Self::PTR(name) => {
                 name.encode(buf);
             }
-            Self::MX { preference, exchange } => {
+            Self::MX {
+                preference,
+                exchange,
+            } => {
                 buf.extend_from_slice(&preference.to_be_bytes());
                 exchange.encode(buf);
             }
@@ -344,7 +388,10 @@ impl RData {
             Self::NS(name) | Self::CNAME(name) | Self::PTR(name) => {
                 name.encode_compressed(buf, map);
             }
-            Self::MX { preference, exchange } => {
+            Self::MX {
+                preference,
+                exchange,
+            } => {
                 buf.extend_from_slice(&preference.to_be_bytes());
                 exchange.encode_compressed(buf, map);
             }
@@ -390,8 +437,7 @@ mod tests {
         let params = vec![
             0x00, 0x01, // key: alpn
             0x00, 0x09, // value length: 9
-            0x02, b'h', b'2',
-            0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1',
+            0x02, b'h', b'2', 0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1',
         ];
         let rdata = RData::HTTPS(SvcbData {
             priority: 1,
@@ -416,7 +462,11 @@ mod tests {
         // Only the priority field, no target, no params.
         let buf = [0x00, 0x01];
         let err = RData::decode(RecordType::HTTPS, &buf, 0, buf.len());
-        assert!(err.is_err(), "expected truncated HTTPS to error, got {:?}", err);
+        assert!(
+            err.is_err(),
+            "expected truncated HTTPS to error, got {:?}",
+            err
+        );
     }
 
     #[test]

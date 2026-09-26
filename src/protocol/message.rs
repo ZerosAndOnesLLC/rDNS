@@ -1,5 +1,5 @@
 use super::edns::{EdnsError, EdnsOpt};
-use super::header::{Header, HeaderError, HEADER_SIZE};
+use super::header::{HEADER_SIZE, Header, HeaderError};
 use super::rdata::RData;
 use super::record::{Question, QuestionError, RecordError, RecordType, ResourceRecord};
 
@@ -91,11 +91,7 @@ impl Message {
                     RData::Raw { data, .. } => data.as_slice(),
                     _ => &[],
                 };
-                let parsed = EdnsOpt::from_rr_fields(
-                    u16::from(rr.rclass),
-                    rr.ttl,
-                    rdata_bytes,
-                )?;
+                let parsed = EdnsOpt::from_rr_fields(u16::from(rr.rclass), rr.ttl, rdata_bytes)?;
                 edns = Some(parsed);
             } else {
                 additional.push(rr);
@@ -205,7 +201,7 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::edns::{opt_code, EdnsOption};
+    use crate::protocol::edns::{EdnsOption, opt_code};
     use crate::protocol::name::DnsName;
     use crate::protocol::opcode::Opcode;
     use crate::protocol::rcode::Rcode;
@@ -296,8 +292,14 @@ mod tests {
                 dnssec_ok: false,
                 z: 0,
                 options: vec![
-                    EdnsOption { code: opt_code::COOKIE, data: b"clientcki".to_vec() },
-                    EdnsOption { code: opt_code::NSID, data: Vec::new() },
+                    EdnsOption {
+                        code: opt_code::COOKIE,
+                        data: b"clientcki".to_vec(),
+                    },
+                    EdnsOption {
+                        code: opt_code::NSID,
+                        data: Vec::new(),
+                    },
                 ],
             }),
         };

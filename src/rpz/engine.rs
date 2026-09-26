@@ -402,12 +402,15 @@ fn redirect_response(query: &Message, answer: ResourceRecord) -> Message {
     }
 }
 
+/// Parsed RPZ rules as (exact, wildcard) lists.
+type ParsedRules = (Vec<(DnsName, RuleEntry)>, Vec<(DnsName, RuleEntry)>);
+
 fn parse_rpz(
     content: &str,
     zone_name: &DnsName,
     counter: &ZoneCounter,
     zone_arc: &Arc<str>,
-) -> (Vec<(DnsName, RuleEntry)>, Vec<(DnsName, RuleEntry)>) {
+) -> ParsedRules {
     let zone_suffix = format!(".{}", zone_name.to_dotted().trim_end_matches('.'));
     let mut exact = Vec::new();
     let mut wild = Vec::new();
@@ -529,7 +532,9 @@ safe.tracking.com CNAME rpz-passthru.
         );
         assert_eq!(
             engine.check(&DnsName::from_str("malware.com").unwrap()),
-            Some(PolicyAction::RedirectA(std::net::Ipv4Addr::new(127, 0, 0, 1)))
+            Some(PolicyAction::RedirectA(std::net::Ipv4Addr::new(
+                127, 0, 0, 1
+            )))
         );
         assert_eq!(
             engine.check(&DnsName::from_str("safe.tracking.com").unwrap()),
@@ -572,7 +577,9 @@ safe.tracking.com CNAME rpz-passthru.
             edns: None,
         };
 
-        let response = engine.apply_action(&PolicyAction::NxDomain, &query).unwrap();
+        let response = engine
+            .apply_action(&PolicyAction::NxDomain, &query)
+            .unwrap();
         assert_eq!(response.header.rcode, Rcode::NxDomain);
         assert_eq!(response.header.id, 0x1234);
         assert!(response.header.rd);
@@ -584,7 +591,9 @@ safe.tracking.com CNAME rpz-passthru.
         let ads = DnsName::from_str("ads.local").unwrap();
         let mal = DnsName::from_str("mal.local").unwrap();
 
-        engine.load_zone_str("a.example.com CNAME .\n", &ads).unwrap();
+        engine
+            .load_zone_str("a.example.com CNAME .\n", &ads)
+            .unwrap();
         engine
             .load_zone_str("b.example.com CNAME .\n*.tracker.com CNAME .\n", &mal)
             .unwrap();
@@ -610,7 +619,9 @@ safe.tracking.com CNAME rpz-passthru.
     fn test_counters_persist_across_clear() {
         let engine = RpzEngine::new();
         let zone = DnsName::from_str("test.zone").unwrap();
-        engine.load_zone_str("blocked.com CNAME .\n", &zone).unwrap();
+        engine
+            .load_zone_str("blocked.com CNAME .\n", &zone)
+            .unwrap();
         engine.check(&DnsName::from_str("blocked.com").unwrap());
         engine.check(&DnsName::from_str("blocked.com").unwrap());
         assert_eq!(engine.total_hits(), 2);
@@ -622,7 +633,9 @@ safe.tracking.com CNAME rpz-passthru.
         assert_eq!(stats[0].rules, 0);
         assert_eq!(stats[0].hits, 2);
 
-        engine.load_zone_str("blocked.com CNAME .\n", &zone).unwrap();
+        engine
+            .load_zone_str("blocked.com CNAME .\n", &zone)
+            .unwrap();
         engine.check(&DnsName::from_str("blocked.com").unwrap());
         assert_eq!(engine.total_hits(), 3);
     }
@@ -646,7 +659,11 @@ safe.tracking.com CNAME rpz-passthru.
         let total = engine.reload_all().unwrap();
         assert_eq!(total, 2);
         assert_eq!(engine.total_hits(), 1);
-        assert!(engine.check(&DnsName::from_str("also.com").unwrap()).is_some());
+        assert!(
+            engine
+                .check(&DnsName::from_str("also.com").unwrap())
+                .is_some()
+        );
         assert_eq!(engine.total_hits(), 2);
 
         std::fs::remove_dir_all(dir).ok();

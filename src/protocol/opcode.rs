@@ -3,10 +3,10 @@
 #[repr(u8)]
 pub enum Opcode {
     Query = 0,
-    IQuery = 1,  // Inverse Query (obsolete)
+    IQuery = 1, // Inverse Query (obsolete)
     Status = 2,
-    Notify = 4,  // RFC 1996
-    Update = 5,  // RFC 2136
+    Notify = 4, // RFC 1996
+    Update = 5, // RFC 2136
     Unknown(u8),
 }
 

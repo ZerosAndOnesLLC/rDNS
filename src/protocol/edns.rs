@@ -133,7 +133,11 @@ impl EdnsOpt {
     /// Build an `EdnsOpt` from the raw CLASS and TTL fields of an OPT RR plus
     /// its RDATA. Errors only on malformed option triples; unknown codes pass
     /// through as opaque `EdnsOption`s so we can round-trip future extensions.
-    pub fn from_rr_fields(class_field: u16, ttl_field: u32, rdata: &[u8]) -> Result<Self, EdnsError> {
+    pub fn from_rr_fields(
+        class_field: u16,
+        ttl_field: u32,
+        rdata: &[u8],
+    ) -> Result<Self, EdnsError> {
         let extended_rcode = ((ttl_field >> 24) & 0xFF) as u8;
         let version = ((ttl_field >> 16) & 0xFF) as u8;
         let dnssec_ok = (ttl_field & 0x0000_8000) != 0;
@@ -237,7 +241,10 @@ mod tests {
 
     #[test]
     fn runtime_default_matches_flag_day() {
-        assert_eq!(EdnsRuntime::default().udp_payload_size, DEFAULT_UDP_PAYLOAD_SIZE);
+        assert_eq!(
+            EdnsRuntime::default().udp_payload_size,
+            DEFAULT_UDP_PAYLOAD_SIZE
+        );
         assert_eq!(DEFAULT_UDP_PAYLOAD_SIZE, 1232);
     }
 
@@ -292,9 +299,18 @@ mod tests {
             dnssec_ok: true,
             z: 0,
             options: vec![
-                EdnsOption { code: opt_code::COOKIE, data: b"12345678".to_vec() },
-                EdnsOption { code: opt_code::CLIENT_SUBNET, data: vec![0, 1, 24, 0, 192, 0, 2] },
-                EdnsOption { code: 0xFFFE, data: vec![0xAA, 0xBB] }, // future/unknown
+                EdnsOption {
+                    code: opt_code::COOKIE,
+                    data: b"12345678".to_vec(),
+                },
+                EdnsOption {
+                    code: opt_code::CLIENT_SUBNET,
+                    data: vec![0, 1, 24, 0, 192, 0, 2],
+                },
+                EdnsOption {
+                    code: 0xFFFE,
+                    data: vec![0xAA, 0xBB],
+                }, // future/unknown
             ],
         };
         let mut rr = Vec::new();
@@ -361,7 +377,10 @@ mod tests {
             version: 0,
             dnssec_ok: false,
             z: 0,
-            options: vec![EdnsOption { code: opt_code::NSID, data: Vec::new() }],
+            options: vec![EdnsOption {
+                code: opt_code::NSID,
+                data: Vec::new(),
+            }],
         };
         let mut rr = Vec::new();
         original.encode_rr(&mut rr);

@@ -1,9 +1,9 @@
 use super::entry::{CacheEntry, CacheKey};
-use crate::fasthash::{fx_hash, FxBuildHasher};
+use crate::fasthash::{FxBuildHasher, fx_hash};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Number of cache shards. Power of 2 for fast modulo.
@@ -289,7 +289,14 @@ mod tests {
             ttl,
             rdata: RData::A(ip),
         };
-        CacheEntry::new(vec![rr], vec![], vec![], ttl, false, crate::protocol::rcode::Rcode::NoError)
+        CacheEntry::new(
+            vec![rr],
+            vec![],
+            vec![],
+            ttl,
+            false,
+            crate::protocol::rcode::Rcode::NoError,
+        )
     }
 
     #[test]
@@ -395,14 +402,20 @@ mod tests {
         store.insert(key.clone(), entry);
         let _ = store.lookup(&key); // fresh path — expired, must NOT delete
         let stale = store.lookup_stale(&key);
-        assert!(stale.is_some(), "serve-stale entry must survive prior fresh lookup");
+        assert!(
+            stale.is_some(),
+            "serve-stale entry must survive prior fresh lookup"
+        );
     }
 
     #[test]
     fn test_fast_cache_ttl_clamping() {
         let store = FastCacheStore::new(1000, 60, 86400, 300);
         let key = make_key("example.com");
-        store.insert(key.clone(), make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 10));
+        store.insert(
+            key.clone(),
+            make_entry("example.com", Ipv4Addr::new(1, 2, 3, 4), 10),
+        );
         let cached = store.lookup(&key).unwrap();
         assert_eq!(cached.original_ttl, 60); // clamped to min
     }

@@ -1,9 +1,4 @@
-use crate::auth::AuthEngine;
-use crate::cache::CacheStore;
-use crate::resolver::Resolver;
-use crate::rpz::RpzEngine;
-use crate::security::acl::RecursionAcl;
-use crate::security::rate_limit::RateLimiter;
+use super::StreamContext;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -60,17 +55,11 @@ pub fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<T
 pub async fn serve(
     addr: SocketAddr,
     acceptor: TlsAcceptor,
-    cache: CacheStore,
-    resolver: Option<Resolver>,
-    auth: Option<AuthEngine>,
-    rpz: RpzEngine,
-    rate_limiter: RateLimiter,
-    acl: RecursionAcl,
+    ctx: StreamContext,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let semaphore = Arc::new(Semaphore::new(MAX_DOT_CONNECTIONS));
-    let acl = Arc::new(acl);
-    let rate_limiter = Arc::new(rate_limiter);
+    let ctx = Arc::new(ctx);
     tracing::info!(%addr, max_connections = MAX_DOT_CONNECTIONS, "DNS-over-TLS listener bound");
 
     loop {
@@ -91,7 +80,7 @@ pub async fn serve(
             Err(e) => return Err(e.into()),
         };
         tracing::debug!(%src, "DoT connection accepted");
-        if !rate_limiter.check(src.ip()) {
+        if !ctx.rate_limiter.check(src.ip()) {
             drop(stream);
             continue;
         }
@@ -106,37 +95,27 @@ pub async fn serve(
         };
 
         let acceptor = acceptor.clone();
-        let cache = cache.clone();
-        let resolver = resolver.clone();
-        let auth = auth.clone();
-        let rpz = rpz.clone();
-        let rate_limiter = rate_limiter.clone();
-        let recursion_allowed = acl.is_allowed(src.ip());
+        let ctx = ctx.clone();
+        let recursion_allowed = ctx.acl.is_allowed(src.ip());
 
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
             // Timeout the TLS handshake
-            let tls_stream = match tokio::time::timeout(
-                TLS_HANDSHAKE_TIMEOUT,
-                acceptor.accept(stream),
-            )
-            .await
-            {
-                Ok(Ok(s)) => s,
-                Ok(Err(e)) => {
-                    tracing::debug!(%src, error = %e, "TLS handshake failed");
-                    return;
-                }
-                Err(_) => {
-                    tracing::debug!(%src, "TLS handshake timed out");
-                    return;
-                }
-            };
+            let tls_stream =
+                match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) => {
+                        tracing::debug!(%src, error = %e, "TLS handshake failed");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%src, "TLS handshake timed out");
+                        return;
+                    }
+                };
 
-            if let Err(e) =
-                handle_tls_connection(tls_stream, &cache, &resolver, &auth, &rpz, recursion_allowed, &rate_limiter, src).await
-            {
+            if let Err(e) = handle_tls_connection(tls_stream, &ctx, recursion_allowed, src).await {
                 tracing::debug!(%src, error = %e, "DoT connection error");
             }
         });
@@ -145,17 +124,13 @@ pub async fn serve(
 
 async fn handle_tls_connection(
     mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-    cache: &CacheStore,
-    resolver: &Option<Resolver>,
-    auth: &Option<AuthEngine>,
-    rpz: &RpzEngine,
+    ctx: &StreamContext,
     recursion_allowed: bool,
-    rate_limiter: &RateLimiter,
     src: SocketAddr,
 ) -> anyhow::Result<()> {
     loop {
         // Per-query rate limit check
-        if !rate_limiter.check(src.ip()) {
+        if !ctx.rate_limiter.check(src.ip()) {
             // Rate limited — close connection
             return Ok(());
         }
@@ -181,7 +156,19 @@ async fn handle_tls_connection(
             }
         }
 
-        let response = match tokio::time::timeout(super::effective_query_timeout(DOT_QUERY_TIMEOUT), super::handle_query(&buf, cache, resolver, auth, rpz, recursion_allowed)).await {
+        let response = match tokio::time::timeout(
+            super::effective_query_timeout(DOT_QUERY_TIMEOUT),
+            super::handle_query(
+                &buf,
+                &ctx.cache,
+                &ctx.resolver,
+                &ctx.auth,
+                &ctx.rpz,
+                recursion_allowed,
+            ),
+        )
+        .await
+        {
             Ok(resp) => resp,
             Err(_) => {
                 tracing::debug!("DoT query resolution timed out");
@@ -199,7 +186,9 @@ async fn handle_tls_connection(
             stream.write_all(&response).await?;
             stream.flush().await?;
             Ok::<(), std::io::Error>(())
-        }).await {
+        })
+        .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => anyhow::bail!("DoT write timeout"),

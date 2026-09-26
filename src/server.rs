@@ -15,9 +15,9 @@ use tracing::info;
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Install EDNS runtime before any listener or resolver starts — they
     // read it lazily and the first read wins forever.
-    crate::protocol::edns::install_runtime(
-        crate::protocol::edns::EdnsRuntime::from_config(cfg.edns.udp_payload_size),
-    );
+    crate::protocol::edns::install_runtime(crate::protocol::edns::EdnsRuntime::from_config(
+        cfg.edns.udp_payload_size,
+    ));
 
     // Initialize cache
     let cache = CacheStore::new(
@@ -145,7 +145,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Create rate limiter
     let rate_limiter = RateLimiter::new(cfg.security.rate_limit);
     if cfg.security.rate_limit > 0 {
-        info!(rate_limit = cfg.security.rate_limit, "Per-source rate limiting enforced");
+        info!(
+            rate_limit = cfg.security.rate_limit,
+            "Per-source rate limiting enforced"
+        );
         let _cleanup_handle = rate_limiter.clone().spawn_cleanup_task();
     }
 
@@ -182,14 +185,16 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // Start TCP listeners
     for addr in &cfg.listeners.tcp {
         let addr = *addr;
-        let resolver = resolver.clone();
-        let cache = cache.clone();
-        let auth = auth_engine.clone();
-        let rpz = rpz_engine.clone();
-        let rl = rate_limiter.clone();
-        let acl = acl.clone();
+        let ctx = listener::StreamContext {
+            cache: cache.clone(),
+            resolver: resolver.clone(),
+            auth: auth_engine.clone(),
+            rpz: rpz_engine.clone(),
+            rate_limiter: rate_limiter.clone(),
+            acl: acl.clone(),
+        };
         handles.push(tokio::spawn(async move {
-            if let Err(e) = listener::tcp::serve(addr, cache, resolver, auth, rpz, rl, acl).await {
+            if let Err(e) = listener::tcp::serve(addr, ctx).await {
                 tracing::error!(%addr, error = %e, "TCP listener failed");
             }
         }));
@@ -202,16 +207,16 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         for addr in &tls_cfg.addresses {
             let addr = *addr;
             let acceptor = acceptor.clone();
-            let resolver = resolver.clone();
-            let cache = cache.clone();
-            let auth = auth_engine.clone();
-            let rpz = rpz_engine.clone();
-            let rl = rate_limiter.clone();
-            let acl = acl.clone();
+            let ctx = listener::StreamContext {
+                cache: cache.clone(),
+                resolver: resolver.clone(),
+                auth: auth_engine.clone(),
+                rpz: rpz_engine.clone(),
+                rate_limiter: rate_limiter.clone(),
+                acl: acl.clone(),
+            };
             handles.push(tokio::spawn(async move {
-                if let Err(e) =
-                    listener::tls::serve(addr, acceptor, cache, resolver, auth, rpz, rl, acl).await
-                {
+                if let Err(e) = listener::tls::serve(addr, acceptor, ctx).await {
                     tracing::error!(%addr, error = %e, "DoT listener failed");
                 }
             }));

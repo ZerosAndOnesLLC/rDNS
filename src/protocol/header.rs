@@ -23,19 +23,19 @@ use super::{Opcode, Rcode};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub id: u16,
-    pub qr: bool,         // Query (false) or Response (true)
+    pub qr: bool, // Query (false) or Response (true)
     pub opcode: Opcode,
-    pub aa: bool,         // Authoritative Answer
-    pub tc: bool,         // Truncated
-    pub rd: bool,         // Recursion Desired
-    pub ra: bool,         // Recursion Available
-    pub ad: bool,         // Authenticated Data (DNSSEC, RFC 4035)
-    pub cd: bool,         // Checking Disabled (DNSSEC, RFC 4035)
+    pub aa: bool, // Authoritative Answer
+    pub tc: bool, // Truncated
+    pub rd: bool, // Recursion Desired
+    pub ra: bool, // Recursion Available
+    pub ad: bool, // Authenticated Data (DNSSEC, RFC 4035)
+    pub cd: bool, // Checking Disabled (DNSSEC, RFC 4035)
     pub rcode: Rcode,
-    pub qd_count: u16,    // Question count
-    pub an_count: u16,    // Answer count
-    pub ns_count: u16,    // Authority count
-    pub ar_count: u16,    // Additional count
+    pub qd_count: u16, // Question count
+    pub an_count: u16, // Answer count
+    pub ns_count: u16, // Authority count
+    pub ar_count: u16, // Additional count
 }
 
 pub const HEADER_SIZE: usize = 12;

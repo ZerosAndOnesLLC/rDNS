@@ -1,14 +1,17 @@
+mod stream_context;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
 #[allow(dead_code)]
 pub mod udp_batch;
 
+pub use stream_context::StreamContext;
+
 use crate::auth::engine::{AuthEngine, AuthResult};
-use crate::cache::entry::CacheKey;
 use crate::cache::CacheStore;
+use crate::cache::entry::CacheKey;
 use crate::protocol::edns::{self, EdnsOpt, MIN_UDP_PAYLOAD_SIZE};
-use crate::protocol::header::{Header, HEADER_SIZE};
+use crate::protocol::header::{HEADER_SIZE, Header};
 use crate::protocol::message::Message;
 use crate::protocol::name::DnsName;
 use crate::protocol::rcode::Rcode;
@@ -67,7 +70,11 @@ pub(crate) fn log_query(src: SocketAddr, query: &[u8], response: &[u8], transpor
     let Some((name, qtype, _qclass, _id, _rd)) = parse_query_fast(query) else {
         return;
     };
-    let rcode = if response.len() >= 4 { response[3] & 0x0F } else { 0 };
+    let rcode = if response.len() >= 4 {
+        response[3] & 0x0F
+    } else {
+        0
+    };
     tracing::info!(
         target: "rdns::query",
         %src,
@@ -140,7 +147,12 @@ pub(crate) fn parse_edns_from_query(buf: &[u8]) -> Option<EdnsOpt> {
         }
         let rtype = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
         let class = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]);
-        let ttl = u32::from_be_bytes([buf[offset + 4], buf[offset + 5], buf[offset + 6], buf[offset + 7]]);
+        let ttl = u32::from_be_bytes([
+            buf[offset + 4],
+            buf[offset + 5],
+            buf[offset + 6],
+            buf[offset + 7],
+        ]);
         let rdlen = u16::from_be_bytes([buf[offset + 8], buf[offset + 9]]) as usize;
         let rdata_start = offset + 10;
         let rdata_end = rdata_start.checked_add(rdlen)?;
@@ -195,7 +207,9 @@ fn append_opt_and_bump_ar(buf: &mut Vec<u8>, opt: &EdnsOpt) {
 
 /// Fast-path: extract query name and type from raw wire format without full decode.
 /// Returns (name, qtype, qclass, id, rd_flag) or None if parse fails.
-pub(crate) fn parse_query_fast(buf: &[u8]) -> Option<(DnsName, RecordType, RecordClass, u16, bool)> {
+pub(crate) fn parse_query_fast(
+    buf: &[u8],
+) -> Option<(DnsName, RecordType, RecordClass, u16, bool)> {
     if buf.len() < HEADER_SIZE + 5 {
         return None;
     }
@@ -244,7 +258,11 @@ fn build_cached_response_fast(
         .wire
         .get_or_init(|| encode_cached_wire(entry, qname, qtype, qclass));
 
-    let rcode = if entry.negative { entry.negative_rcode } else { Rcode::NoError };
+    let rcode = if entry.negative {
+        entry.negative_rcode
+    } else {
+        Rcode::NoError
+    };
     let remaining_ttl = entry.remaining_ttl();
     let extra_ar = if client_edns.is_some() { 1 } else { 0 };
 
@@ -415,12 +433,7 @@ fn build_refused_fast(
 /// extended rcode 16 are 0); OPT TTL carries the extended-rcode high byte
 /// = 1 and advertises our highest supported VERSION (0). The client will
 /// retry with that lower version.
-fn build_badvers_fast(
-    id: u16,
-    name: &DnsName,
-    qtype: RecordType,
-    qclass: RecordClass,
-) -> Vec<u8> {
+fn build_badvers_fast(id: u16, name: &DnsName, qtype: RecordType, qclass: RecordClass) -> Vec<u8> {
     let header = Header {
         id,
         qr: true,
@@ -470,14 +483,13 @@ pub(crate) async fn handle_query(
     // BADVERS short-circuit (RFC 6891 §6.1.3): an EDNS version we don't
     // implement is answered only with an OPT that advertises our highest
     // supported version, nothing else.
-    if let Some(opt) = &client_edns {
-        if opt.is_unsupported_version() {
-            if let Some((name, qtype, qclass, id, _rd)) = parse_query_fast(buf) {
-                return build_badvers_fast(id, &name, qtype, qclass);
-            }
-            // Fall through to FORMERR if we can't even parse the question.
-        }
+    if let Some(opt) = &client_edns
+        && opt.is_unsupported_version()
+        && let Some((name, qtype, qclass, id, _rd)) = parse_query_fast(buf)
+    {
+        return build_badvers_fast(id, &name, qtype, qclass);
     }
+    // Fall through to FORMERR if we can't even parse the question.
 
     let client_edns_ref = client_edns.as_ref();
 
@@ -490,13 +502,13 @@ pub(crate) async fn handle_query(
                 return Vec::new();
             }
             // Need full decode for RPZ response building
-            if let Ok(query) = Message::decode(buf) {
-                if let Some(mut response) = rpz.apply_action(&action, &query) {
-                    if client_edns.is_some() {
-                        response.edns = Some(server_edns_opt());
-                    }
-                    return response.encode();
+            if let Ok(query) = Message::decode(buf)
+                && let Some(mut response) = rpz.apply_action(&action, &query)
+            {
+                if client_edns.is_some() {
+                    response.edns = Some(server_edns_opt());
                 }
+                return response.encode();
             }
         }
 
@@ -534,7 +546,15 @@ pub(crate) async fn handle_query(
         // Direct cache lookup (no resolver mode)
         let key = CacheKey::new(name.clone(), qtype, qclass);
         if let Some(entry) = cache.lookup(&key) {
-            return build_cached_response_fast(&entry, id, rd, &name, qtype, qclass, client_edns_ref);
+            return build_cached_response_fast(
+                &entry,
+                id,
+                rd,
+                &name,
+                qtype,
+                qclass,
+                client_edns_ref,
+            );
         }
 
         // SERVFAIL
@@ -581,7 +601,11 @@ pub(crate) fn truncate_udp_response(
     // one — a minimal OPT is 11 bytes (root name + type + class + ttl +
     // rdlength + empty rdata).
     const MIN_OPT_SIZE: usize = 11;
-    let reserved_opt = if server_opt.is_some() { MIN_OPT_SIZE } else { 0 };
+    let reserved_opt = if server_opt.is_some() {
+        MIN_OPT_SIZE
+    } else {
+        0
+    };
     let budget = effective_size.saturating_sub(reserved_opt);
 
     // Parse section counts from the current header.
@@ -699,7 +723,7 @@ pub(crate) fn is_valid_response(buf: &[u8]) -> bool {
     let flags = u16::from_be_bytes([buf[2], buf[3]]);
     let qr = (flags >> 15) & 1 == 1;
     let rcode = (flags & 0x000F) as u8;
-    qr && matches!(rcode, 0 | 1 | 2 | 3 | 4 | 5)
+    qr && matches!(rcode, 0..=5)
 }
 
 /// Classify an error from `TcpListener::accept()` as recoverable.
@@ -921,7 +945,10 @@ mod edns_listener_tests {
             version: 0,
             dnssec_ok: true,
             z: 0,
-            options: vec![EdnsOption { code: 10, data: b"cookie12".to_vec() }],
+            options: vec![EdnsOption {
+                code: 10,
+                data: b"cookie12".to_vec(),
+            }],
         };
         let wire = build_query_with_opt(0xAB, "example.com", &expected);
         let got = parse_edns_from_query(&wire).expect("must find OPT");
@@ -937,8 +964,10 @@ mod edns_listener_tests {
     #[test]
     fn effective_size_honors_client_advertisement() {
         let runtime_size = edns::runtime().udp_payload_size;
-        let mut opt = EdnsOpt::default();
-        opt.udp_payload_size = 4096;
+        let mut opt = EdnsOpt {
+            udp_payload_size: 4096,
+            ..Default::default()
+        };
         // Clamped to the server's configured runtime size.
         assert_eq!(
             effective_udp_response_size(Some(&opt)),
@@ -950,7 +979,10 @@ mod edns_listener_tests {
 
         // Buggy client advertises below the 512 floor.
         opt.udp_payload_size = 200;
-        assert_eq!(effective_udp_response_size(Some(&opt)), MIN_UDP_PAYLOAD_SIZE as usize);
+        assert_eq!(
+            effective_udp_response_size(Some(&opt)),
+            MIN_UDP_PAYLOAD_SIZE as usize
+        );
     }
 
     #[test]
@@ -1008,7 +1040,10 @@ mod edns_listener_tests {
 
         let decoded = Message::decode(&resp).unwrap();
         assert_eq!(decoded.header.rcode, Rcode::ServFail);
-        assert!(decoded.edns.is_some(), "OPT-on-query implies OPT-on-response");
+        assert!(
+            decoded.edns.is_some(),
+            "OPT-on-query implies OPT-on-response"
+        );
         assert_eq!(
             decoded.edns.unwrap().udp_payload_size,
             edns::runtime().udp_payload_size,
@@ -1025,7 +1060,10 @@ mod edns_listener_tests {
         let resp = handle_query(&wire, &cache, &None, &None, &rpz, true).await;
 
         let decoded = Message::decode(&resp).unwrap();
-        assert!(decoded.edns.is_none(), "must not introduce OPT the client didn't ask for");
+        assert!(
+            decoded.edns.is_none(),
+            "must not introduce OPT the client didn't ask for"
+        );
     }
 
     #[test]
@@ -1055,7 +1093,7 @@ mod edns_listener_tests {
         buf.extend_from_slice(&u16::from(RecordType::A).to_be_bytes());
         buf.extend_from_slice(&u16::from(RecordClass::IN).to_be_bytes());
         // Pad past the 512 B ceiling.
-        buf.extend(std::iter::repeat(0u8).take(600));
+        buf.extend(std::iter::repeat_n(0u8, 600));
 
         let server_opt = server_edns_opt();
         truncate_udp_response(&mut buf, LEGACY_UDP_LIMIT, Some(&server_opt));
@@ -1099,30 +1137,45 @@ mod edns_listener_tests {
         let qname = DnsName::from_str("example.com").unwrap();
         let mut msg = Message {
             header: Header {
-                id: 1, qr: true, opcode: crate::protocol::opcode::Opcode::Query,
-                aa: false, tc: false, rd: true, ra: true, ad: false, cd: false,
+                id: 1,
+                qr: true,
+                opcode: crate::protocol::opcode::Opcode::Query,
+                aa: false,
+                tc: false,
+                rd: true,
+                ra: true,
+                ad: false,
+                cd: false,
                 rcode: Rcode::NoError,
-                qd_count: 1, an_count: 0, ns_count: 0, ar_count: 0,
+                qd_count: 1,
+                an_count: 0,
+                ns_count: 0,
+                ar_count: 0,
             },
             questions: vec![Question {
                 name: qname.clone(),
                 qtype: RecordType::A,
                 qclass: RecordClass::IN,
             }],
-            answers: (0..20).map(|i| ResourceRecord {
-                name: qname.clone(),
-                rtype: RecordType::A,
-                rclass: RecordClass::IN,
-                ttl: 300,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, i + 1)),
-            }).collect(),
+            answers: (0..20)
+                .map(|i| ResourceRecord {
+                    name: qname.clone(),
+                    rtype: RecordType::A,
+                    rclass: RecordClass::IN,
+                    ttl: 300,
+                    rdata: RData::A(Ipv4Addr::new(192, 0, 2, i + 1)),
+                })
+                .collect(),
             authority: Vec::new(),
             additional: Vec::new(),
             edns: None,
         };
         // Pre-truncation this response is much bigger than 256 bytes.
         let mut wire = msg.encode();
-        assert!(wire.len() > 256, "sanity: untruncated response must exceed cap");
+        assert!(
+            wire.len() > 256,
+            "sanity: untruncated response must exceed cap"
+        );
         msg.header.tc = false;
 
         truncate_udp_response(&mut wire, 256, None);
@@ -1134,11 +1187,19 @@ mod edns_listener_tests {
         // Reparses cleanly: at least one answer kept, ns/ar zeroed.
         let decoded = Message::decode(&wire).expect("truncated response must parse");
         assert_eq!(decoded.questions.len(), 1);
-        assert!(!decoded.answers.is_empty(), "truncator must keep some answers, not empty the section");
+        assert!(
+            !decoded.answers.is_empty(),
+            "truncator must keep some answers, not empty the section"
+        );
         assert!(decoded.authority.is_empty());
         assert!(decoded.additional.is_empty());
         // Every kept answer still carries its IP rdata.
-        assert!(decoded.answers.iter().all(|rr| matches!(rr.rdata, RData::A(_))));
+        assert!(
+            decoded
+                .answers
+                .iter()
+                .all(|rr| matches!(rr.rdata, RData::A(_)))
+        );
     }
 
     /// Falls back to header+question+TC+OPT when even one answer RR
@@ -1155,10 +1216,20 @@ mod edns_listener_tests {
         let qname = DnsName::from_str("example.com").unwrap();
         let msg = Message {
             header: Header {
-                id: 1, qr: true, opcode: crate::protocol::opcode::Opcode::Query,
-                aa: false, tc: false, rd: true, ra: true, ad: false, cd: false,
+                id: 1,
+                qr: true,
+                opcode: crate::protocol::opcode::Opcode::Query,
+                aa: false,
+                tc: false,
+                rd: true,
+                ra: true,
+                ad: false,
+                cd: false,
                 rcode: Rcode::NoError,
-                qd_count: 1, an_count: 0, ns_count: 0, ar_count: 0,
+                qd_count: 1,
+                an_count: 0,
+                ns_count: 0,
+                ar_count: 0,
             },
             questions: vec![Question {
                 name: qname.clone(),
@@ -1230,7 +1301,11 @@ mod fuzz_lite_tests {
         for len in [1usize, 5, 11] {
             let buf = vec![0xABu8; len];
             let r = drive(&buf).await;
-            assert!(is_valid_response(&r), "len {} produced invalid response", len);
+            assert!(
+                is_valid_response(&r),
+                "len {} produced invalid response",
+                len
+            );
         }
     }
 
@@ -1242,7 +1317,11 @@ mod fuzz_lite_tests {
             buf[1] = 0xBB;
             buf[4..6].copy_from_slice(&qd.to_be_bytes());
             let r = drive(&buf).await;
-            assert!(is_valid_response(&r), "qd_count {} produced invalid response", qd);
+            assert!(
+                is_valid_response(&r),
+                "qd_count {} produced invalid response",
+                qd
+            );
         }
     }
 
@@ -1286,7 +1365,10 @@ mod fuzz_lite_tests {
                 }
             }
             let r = drive(&buf).await;
-            assert!(is_valid_response(&r), "random payload produced invalid response");
+            assert!(
+                is_valid_response(&r),
+                "random payload produced invalid response"
+            );
         }
     }
 
@@ -1299,7 +1381,11 @@ mod fuzz_lite_tests {
             buf.extend_from_slice(&qtype.to_be_bytes());
             buf.extend_from_slice(&1u16.to_be_bytes());
             let r = drive(&buf).await;
-            assert!(is_valid_response(&r), "qtype {} produced invalid response", qtype);
+            assert!(
+                is_valid_response(&r),
+                "qtype {} produced invalid response",
+                qtype
+            );
         }
     }
 
@@ -1353,13 +1439,27 @@ mod cached_wire_tests {
         let qname = DnsName::from_str("www.example.com").unwrap();
         let cdn = DnsName::from_str("cdn.example.com").unwrap();
         let answers = vec![
-            rr("www.example.com", RecordType::CNAME, RData::CNAME(cdn.clone())),
-            rr("cdn.example.com", RecordType::A, RData::A(Ipv4Addr::new(1, 2, 3, 4))),
+            rr(
+                "www.example.com",
+                RecordType::CNAME,
+                RData::CNAME(cdn.clone()),
+            ),
+            rr(
+                "cdn.example.com",
+                RecordType::A,
+                RData::A(Ipv4Addr::new(1, 2, 3, 4)),
+            ),
         ];
         let entry = CacheEntry::new(answers, vec![], vec![], 300, false, Rcode::NoError);
 
         let resp = build_cached_response_fast(
-            &entry, 0xBEEF, true, &qname, RecordType::A, RecordClass::IN, None,
+            &entry,
+            0xBEEF,
+            true,
+            &qname,
+            RecordType::A,
+            RecordClass::IN,
+            None,
         );
         let msg = Message::decode(&resp).expect("cached response must parse");
 
@@ -1379,7 +1479,10 @@ mod cached_wire_tests {
             other => panic!("expected A, got {other:?}"),
         }
         assert!(msg.answers[0].ttl <= 300 && msg.answers[0].ttl > 295);
-        assert_eq!(msg.answers[0].ttl, msg.answers[1].ttl, "RRs share remaining TTL");
+        assert_eq!(
+            msg.answers[0].ttl, msg.answers[1].ttl,
+            "RRs share remaining TTL"
+        );
     }
 
     /// Negative (NXDOMAIN) entries keep the SOA in authority; the precompute
@@ -1401,13 +1504,22 @@ mod cached_wire_tests {
         let entry = CacheEntry::new(vec![], authority, vec![], 300, true, Rcode::NxDomain);
 
         let resp = build_cached_response_fast(
-            &entry, 7, true, &qname, RecordType::A, RecordClass::IN, None,
+            &entry,
+            7,
+            true,
+            &qname,
+            RecordType::A,
+            RecordClass::IN,
+            None,
         );
         let msg = Message::decode(&resp).expect("negative response must parse");
         assert_eq!(msg.header.rcode, Rcode::NxDomain);
         assert!(msg.answers.is_empty());
         assert_eq!(msg.authority.len(), 1, "SOA must be kept in authority");
-        assert_eq!(msg.authority[0].name, DnsName::from_str("example.com").unwrap());
+        assert_eq!(
+            msg.authority[0].name,
+            DnsName::from_str("example.com").unwrap()
+        );
     }
 
     /// The blob is memoized on first hit; a second hit at the same instant is
@@ -1415,18 +1527,37 @@ mod cached_wire_tests {
     #[test]
     fn memoized_then_ttl_patched_per_hit() {
         let qname = DnsName::from_str("example.com").unwrap();
-        let answers = vec![rr("example.com", RecordType::A, RData::A(Ipv4Addr::new(9, 9, 9, 9)))];
+        let answers = vec![rr(
+            "example.com",
+            RecordType::A,
+            RData::A(Ipv4Addr::new(9, 9, 9, 9)),
+        )];
         let mut entry = CacheEntry::new(answers, vec![], vec![], 300, false, Rcode::NoError);
         // Back-date to a stable, non-boundary elapsed so both builds see the
         // same remaining-TTL second.
         entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(50);
 
         let first = build_cached_response_fast(
-            &entry, 1, true, &qname, RecordType::A, RecordClass::IN, None,
+            &entry,
+            1,
+            true,
+            &qname,
+            RecordType::A,
+            RecordClass::IN,
+            None,
         );
-        assert!(entry.wire.get().is_some(), "first hit must memoize the blob");
+        assert!(
+            entry.wire.get().is_some(),
+            "first hit must memoize the blob"
+        );
         let second = build_cached_response_fast(
-            &entry, 1, true, &qname, RecordType::A, RecordClass::IN, None,
+            &entry,
+            1,
+            true,
+            &qname,
+            RecordType::A,
+            RecordClass::IN,
+            None,
         );
         assert_eq!(first, second, "memoized rebuild must be byte-identical");
         let m = Message::decode(&first).unwrap();
@@ -1434,7 +1565,13 @@ mod cached_wire_tests {
 
         entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(200);
         let aged = build_cached_response_fast(
-            &entry, 1, true, &qname, RecordType::A, RecordClass::IN, None,
+            &entry,
+            1,
+            true,
+            &qname,
+            RecordType::A,
+            RecordClass::IN,
+            None,
         );
         let aged_msg = Message::decode(&aged).unwrap();
         assert!(

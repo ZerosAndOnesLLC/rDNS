@@ -2,14 +2,14 @@ mod auth;
 mod cache;
 mod config;
 mod control;
-mod fasthash;
 mod dnssec;
+mod fasthash;
 mod listener;
 mod metrics;
-mod rpz;
-mod security;
 mod protocol;
 mod resolver;
+mod rpz;
+mod security;
 mod server;
 #[cfg(unix)]
 mod single_instance;
