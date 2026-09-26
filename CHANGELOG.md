@@ -4,7 +4,7 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.17.25] - 2026-09-26
 
 ### Changed
 - Codebase is now clean under `cargo fmt --check` and
