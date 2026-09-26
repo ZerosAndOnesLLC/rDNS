@@ -1,11 +1,11 @@
-FROM rust:1.83-slim AS builder
+FROM rust:1.98-slim-trixie AS builder
 
 WORKDIR /build
 COPY . .
 
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

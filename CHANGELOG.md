@@ -4,6 +4,17 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.17.24] - 2026-09-26
+
+### Changed
+- Dependency refresh: updated `Cargo.lock` to the latest compatible releases
+  (thiserror 2.0.21, syn 3.0.6, synstructure 0.14.0, rand 0.10.3, cc 1.5.1,
+  smallvec 1.16.2, tokio-test 0.4.6, unicode-ident 1.0.26, among others).
+  No source changes.
+- Docker: builder image bumped from `rust:1.83-slim` to `rust:1.98-slim-trixie`,
+  and the runtime image moved from `debian:bookworm-slim` to
+  `debian:trixie-slim` so the glibc versions match between stages.
+
 ## [1.17.23] - 2026-09-14
 
 ### Changed
