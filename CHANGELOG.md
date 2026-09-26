@@ -13,6 +13,16 @@ All notable changes to rDNS are documented in this file. The format is based on
   separate engine handles; each accepted connection now clones one `Arc`
   rather than five handles. No behavior change.
 
+### Fixed
+- Zone files: records spanning multiple lines in parentheses (RFC 1035 §5.1)
+  now parse. The usual multi-line SOA layout, including the bundled
+  `zones/example.com.zone`, previously failed with `invalid rdata for SOA`.
+- Zone files: `;`, `(` and `)` inside quoted strings are no longer treated as
+  comment or grouping syntax, so TXT data like `"v=DKIM1; k=rsa; p=..."` is
+  kept intact instead of being truncated at the first `;`.
+- Unbalanced parentheses in a zone file are reported as a syntax error with
+  the line number where the record starts.
+
 ## [1.17.24] - 2026-09-26
 
 ### Changed
