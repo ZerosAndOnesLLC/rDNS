@@ -1,5 +1,5 @@
-use crate::protocol::name::DnsName;
 use super::zone::Zone;
+use crate::protocol::name::DnsName;
 use std::collections::HashMap;
 
 /// A tree of zones indexed by origin name for fast zone lookup.

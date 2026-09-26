@@ -2,28 +2,30 @@ use super::name::{CompressionMap, DnsName};
 use super::rdata::RData;
 
 /// DNS record types (RFC 1035 + extensions)
+// Variant names are the RFC mnemonics (AAAA, CNAME, SOA, ...), not Rust acronyms.
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordType {
-    A,        // 1 - IPv4 address
-    NS,       // 2 - Name server
-    CNAME,    // 5 - Canonical name
-    SOA,      // 6 - Start of authority
-    PTR,      // 12 - Pointer
-    HINFO,    // 13 - Host info (used for RFC 8482 ANY responses)
-    MX,       // 15 - Mail exchange
-    TXT,      // 16 - Text
-    AAAA,     // 28 - IPv6 address
-    SRV,      // 33 - Service locator
-    OPT,      // 41 - EDNS(0) pseudo-record
-    DS,       // 43 - Delegation signer (DNSSEC)
-    RRSIG,    // 46 - DNSSEC signature
-    NSEC,     // 47 - Next secure (DNSSEC)
-    DNSKEY,   // 48 - DNS key (DNSSEC)
-    NSEC3,    // 50 - NSEC3 (DNSSEC)
-    SVCB,     // 64 - Service binding (RFC 9460)
-    HTTPS,    // 65 - HTTPS service binding (RFC 9460)
-    CAA,      // 257 - Certification authority authorization
-    ANY,      // 255 - Wildcard query type (QTYPE only)
+    A,      // 1 - IPv4 address
+    NS,     // 2 - Name server
+    CNAME,  // 5 - Canonical name
+    SOA,    // 6 - Start of authority
+    PTR,    // 12 - Pointer
+    HINFO,  // 13 - Host info (used for RFC 8482 ANY responses)
+    MX,     // 15 - Mail exchange
+    TXT,    // 16 - Text
+    AAAA,   // 28 - IPv6 address
+    SRV,    // 33 - Service locator
+    OPT,    // 41 - EDNS(0) pseudo-record
+    DS,     // 43 - Delegation signer (DNSSEC)
+    RRSIG,  // 46 - DNSSEC signature
+    NSEC,   // 47 - Next secure (DNSSEC)
+    DNSKEY, // 48 - DNS key (DNSSEC)
+    NSEC3,  // 50 - NSEC3 (DNSSEC)
+    SVCB,   // 64 - Service binding (RFC 9460)
+    HTTPS,  // 65 - HTTPS service binding (RFC 9460)
+    CAA,    // 257 - Certification authority authorization
+    ANY,    // 255 - Wildcard query type (QTYPE only)
     Unknown(u16),
 }
 
@@ -112,12 +114,13 @@ impl std::fmt::Display for RecordType {
 }
 
 /// DNS record classes (RFC 1035)
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordClass {
-    IN,    // 1 - Internet
-    CH,    // 3 - Chaos
-    HS,    // 4 - Hesiod
-    ANY,   // 255 - Any (query only)
+    IN,  // 1 - Internet
+    CH,  // 3 - Chaos
+    HS,  // 4 - Hesiod
+    ANY, // 255 - Any (query only)
     Unknown(u16),
 }
 
@@ -166,8 +169,7 @@ pub struct Question {
 impl Question {
     /// Decode a question from wire format.
     pub fn decode(buf: &[u8], offset: usize) -> Result<(Self, usize), QuestionError> {
-        let (name, name_len) = DnsName::decode(buf, offset)
-            .map_err(QuestionError::Name)?;
+        let (name, name_len) = DnsName::decode(buf, offset).map_err(QuestionError::Name)?;
 
         let pos = offset + name_len;
         if pos + 4 > buf.len() {
@@ -177,7 +179,14 @@ impl Question {
         let qtype = RecordType::from(u16::from_be_bytes([buf[pos], buf[pos + 1]]));
         let qclass = RecordClass::from(u16::from_be_bytes([buf[pos + 2], buf[pos + 3]]));
 
-        Ok((Self { name, qtype, qclass }, name_len + 4))
+        Ok((
+            Self {
+                name,
+                qtype,
+                qclass,
+            },
+            name_len + 4,
+        ))
     }
 
     /// Compression-aware encode. The question name is almost always the

@@ -75,14 +75,10 @@ impl BlockEvents {
         {
             let mut top = self.inner.top.lock();
             *top.entry(event.qname.clone()).or_insert(0) += 1;
-            if top.len() > TOP_CAP {
-                if let Some(victim) = top
-                    .iter()
-                    .min_by_key(|(_, c)| **c)
-                    .map(|(k, _)| k.clone())
-                {
-                    top.remove(&victim);
-                }
+            if top.len() > TOP_CAP
+                && let Some(victim) = top.iter().min_by_key(|(_, c)| **c).map(|(k, _)| k.clone())
+            {
+                top.remove(&victim);
             }
         }
 

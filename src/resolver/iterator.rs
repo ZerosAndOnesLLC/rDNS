@@ -68,7 +68,11 @@ pub async fn query_server(
 
     // Verify the response ID matches
     if response.header.id != id {
-        anyhow::bail!("Response ID mismatch: expected {}, got {}", id, response.header.id);
+        anyhow::bail!(
+            "Response ID mismatch: expected {}, got {}",
+            id,
+            response.header.id
+        );
     }
 
     Ok(response)
@@ -238,10 +242,11 @@ pub fn follow_cnames(
     for _ in 0..16 {
         // Max CNAME chain length
         let cname_target = response.answers.iter().find_map(|rr| {
-            if rr.name == current && rr.rtype == RecordType::CNAME {
-                if let RData::CNAME(target) = &rr.rdata {
-                    return Some(target.clone());
-                }
+            if rr.name == current
+                && rr.rtype == RecordType::CNAME
+                && let RData::CNAME(target) = &rr.rdata
+            {
+                return Some(target.clone());
             }
             None
         });
@@ -249,9 +254,10 @@ pub fn follow_cnames(
         match cname_target {
             Some(target) => {
                 // Check if we have an answer for the CNAME target
-                let has_answer = response.answers.iter().any(|rr| {
-                    rr.name == target && rr.rtype == original_type
-                });
+                let has_answer = response
+                    .answers
+                    .iter()
+                    .any(|rr| rr.name == target && rr.rtype == original_type);
                 if has_answer {
                     return None; // Answer already present, no further resolution needed
                 }
@@ -438,7 +444,10 @@ mod tests {
         let query_name = DnsName::from_str("www.example.com").unwrap();
         let addrs = extract_referral_addresses(&response, &query_name);
         assert_eq!(addrs.len(), 1);
-        assert_eq!(addrs[0], SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 53));
+        assert_eq!(
+            addrs[0],
+            SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 53)
+        );
 
         // Query for www.other.com — NS at example.com is out-of-bailiwick
         let other_name = DnsName::from_str("www.other.com").unwrap();

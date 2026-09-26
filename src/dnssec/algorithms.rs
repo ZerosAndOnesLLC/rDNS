@@ -51,9 +51,9 @@ impl Algorithm {
 /// DNSSEC digest types (for DS records)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DigestType {
-    Sha1,        // 1 — NOT RECOMMENDED but still seen
-    Sha256,      // 2 — MUST implement
-    Sha384,      // 4
+    Sha1,   // 1 — NOT RECOMMENDED but still seen
+    Sha256, // 2 — MUST implement
+    Sha384, // 4
     Unknown(u8),
 }
 

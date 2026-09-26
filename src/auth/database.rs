@@ -109,7 +109,9 @@ mod inner {
 
             for record in &records {
                 match parse_record_row(record) {
-                    Ok(rr) => { let _ = zone.add_record(rr); }
+                    Ok(rr) => {
+                        let _ = zone.add_record(rr);
+                    }
                     Err(e) => {
                         tracing::warn!(
                             zone = %zone_row.name,
@@ -277,7 +279,7 @@ mod inner {
                 Ok(RData::TXT(vec![text.as_bytes().to_vec()]))
             }
             RecordType::SRV => {
-                let parts: Vec<&str> = rdata.trim().split_whitespace().collect();
+                let parts: Vec<&str> = rdata.split_whitespace().collect();
                 if parts.len() != 4 {
                     anyhow::bail!("Invalid SRV rdata: {}", rdata);
                 }

@@ -1,6 +1,6 @@
+use crate::protocol::name::DnsName;
 use crate::protocol::rcode::Rcode;
 use crate::protocol::record::{RecordClass, RecordType, ResourceRecord};
-use crate::protocol::name::DnsName;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -65,7 +65,11 @@ pub struct CacheKey {
 
 impl CacheKey {
     pub fn new(name: DnsName, rtype: RecordType, rclass: RecordClass) -> Self {
-        Self { name, rtype, rclass }
+        Self {
+            name,
+            rtype,
+            rclass,
+        }
     }
 }
 
@@ -114,9 +118,7 @@ impl CacheEntry {
     /// True when the entry is expired but still within `stale_window_secs`
     /// of its original TTL. `stale_window_secs == 0` disables serve-stale.
     pub fn is_stale_usable(&self, stale_window_secs: u32) -> bool {
-        stale_window_secs > 0
-            && self.is_expired()
-            && self.staleness_secs() <= stale_window_secs
+        stale_window_secs > 0 && self.is_expired() && self.staleness_secs() <= stale_window_secs
     }
 
     /// True when the entry is past `original_ttl + stale_window_secs` and
@@ -224,7 +226,10 @@ mod tests {
         entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(400);
         assert!(entry.is_expired());
         assert!(!entry.is_stale_usable(0));
-        assert!(entry.is_past_stale_window(0), "stale disabled: past-expiry ⇒ past window");
+        assert!(
+            entry.is_past_stale_window(0),
+            "stale disabled: past-expiry ⇒ past window"
+        );
     }
 
     #[test]
@@ -243,7 +248,8 @@ mod tests {
         let rr = make_a_record("example.com", Ipv4Addr::new(1, 2, 3, 4), 300);
         let mut entry = CacheEntry::new(vec![rr], vec![], vec![], 300, false, Rcode::NoError);
         // Two days past expiry; cap is one day.
-        entry.inserted_at = std::time::Instant::now() - std::time::Duration::from_secs(300 + 2 * 86400);
+        entry.inserted_at =
+            std::time::Instant::now() - std::time::Duration::from_secs(300 + 2 * 86400);
         assert!(entry.is_expired());
         assert!(!entry.is_stale_usable(86400));
         assert!(entry.is_past_stale_window(86400));

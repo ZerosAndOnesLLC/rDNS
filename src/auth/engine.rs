@@ -62,16 +62,16 @@ impl AuthEngine {
         }
 
         // Check for CNAME at this name
-        if rtype != RecordType::CNAME {
-            if let Some(cname_rrset) = zone.lookup(name, RecordType::CNAME) {
-                return AuthResult::Answer(self.build_answer(
-                    name,
-                    rtype,
-                    rclass,
-                    cname_rrset.records.clone(),
-                    &zone,
-                ));
-            }
+        if rtype != RecordType::CNAME
+            && let Some(cname_rrset) = zone.lookup(name, RecordType::CNAME)
+        {
+            return AuthResult::Answer(self.build_answer(
+                name,
+                rtype,
+                rclass,
+                cname_rrset.records.clone(),
+                &zone,
+            ));
         }
 
         // Check if name exists but no records of the requested type (NODATA)
@@ -94,9 +94,13 @@ impl AuthEngine {
                         rdata: rr.rdata.clone(),
                     })
                     .collect();
-                return AuthResult::Answer(
-                    self.build_answer(name, rtype, rclass, synthesized, &zone),
-                );
+                return AuthResult::Answer(self.build_answer(
+                    name,
+                    rtype,
+                    rclass,
+                    synthesized,
+                    &zone,
+                ));
             } else {
                 // Wildcard exists but not for this type -- NODATA
                 return AuthResult::Answer(self.build_nodata(name, rtype, rclass, &zone));
@@ -279,15 +283,15 @@ impl AuthEngine {
 
         // Add glue records for NS targets that are within this zone
         for rr in &ns_rrset.records {
-            if let RData::NS(ref ns_name) = rr.rdata {
-                if zone.contains_name(ns_name) {
-                    // Add A records for this NS
-                    if let Some(a_rrset) = zone.lookup(ns_name, RecordType::A) {
-                        additional.extend(a_rrset.records.clone());
-                    }
-                    if let Some(aaaa_rrset) = zone.lookup(ns_name, RecordType::AAAA) {
-                        additional.extend(aaaa_rrset.records.clone());
-                    }
+            if let RData::NS(ref ns_name) = rr.rdata
+                && zone.contains_name(ns_name)
+            {
+                // Add A records for this NS
+                if let Some(a_rrset) = zone.lookup(ns_name, RecordType::A) {
+                    additional.extend(a_rrset.records.clone());
+                }
+                if let Some(aaaa_rrset) = zone.lookup(ns_name, RecordType::AAAA) {
+                    additional.extend(aaaa_rrset.records.clone());
                 }
             }
         }
@@ -512,42 +516,106 @@ ns2 IN  A   192.0.2.2
         };
 
         // Apex
-        push(&mut zone, "example.com", RecordType::NS, RData::NS(DnsName::from_str("ns1.example.com").unwrap()));
-        push(&mut zone, "example.com", RecordType::A, RData::A("93.184.216.34".parse().unwrap()));
-        push(&mut zone, "example.com", RecordType::AAAA, RData::AAAA("2001:db8::34".parse().unwrap()));
-        push(&mut zone, "example.com", RecordType::MX, RData::MX {
-            preference: 10,
-            exchange: DnsName::from_str("mail.example.com").unwrap(),
-        });
-        push(&mut zone, "example.com", RecordType::TXT, RData::TXT(vec![b"v=spf1 -all".to_vec()]));
-        push(&mut zone, "example.com", RecordType::CAA, RData::CAA(CaaData {
-            flags: 0,
-            tag: "issue".into(),
-            value: b"letsencrypt.org".to_vec(),
-        }));
+        push(
+            &mut zone,
+            "example.com",
+            RecordType::NS,
+            RData::NS(DnsName::from_str("ns1.example.com").unwrap()),
+        );
+        push(
+            &mut zone,
+            "example.com",
+            RecordType::A,
+            RData::A("93.184.216.34".parse().unwrap()),
+        );
+        push(
+            &mut zone,
+            "example.com",
+            RecordType::AAAA,
+            RData::AAAA("2001:db8::34".parse().unwrap()),
+        );
+        push(
+            &mut zone,
+            "example.com",
+            RecordType::MX,
+            RData::MX {
+                preference: 10,
+                exchange: DnsName::from_str("mail.example.com").unwrap(),
+            },
+        );
+        push(
+            &mut zone,
+            "example.com",
+            RecordType::TXT,
+            RData::TXT(vec![b"v=spf1 -all".to_vec()]),
+        );
+        push(
+            &mut zone,
+            "example.com",
+            RecordType::CAA,
+            RData::CAA(CaaData {
+                flags: 0,
+                tag: "issue".into(),
+                value: b"letsencrypt.org".to_vec(),
+            }),
+        );
 
         // Labels
-        push(&mut zone, "www.example.com", RecordType::A, RData::A("93.184.216.34".parse().unwrap()));
-        push(&mut zone, "www.example.com", RecordType::AAAA, RData::AAAA("2001:db8::1".parse().unwrap()));
-        push(&mut zone, "mail.example.com", RecordType::A, RData::A("93.184.216.35".parse().unwrap()));
-        push(&mut zone, "_sip._tcp.example.com", RecordType::SRV, RData::SRV(SrvData {
-            priority: 10,
-            weight: 60,
-            port: 5060,
-            target: DnsName::from_str("sipserver.example.com").unwrap(),
-        }));
-        push(&mut zone, "alias.example.com", RecordType::CNAME,
-             RData::CNAME(DnsName::from_str("www.example.com").unwrap()));
-        push(&mut zone, "svc.example.com", RecordType::HTTPS, RData::HTTPS(SvcbData {
-            priority: 1,
-            target: DnsName::from_str("www.example.com").unwrap(),
-            params: vec![0x00, 0x01, 0x00, 0x03, 0x02, b'h', b'2'],
-        }));
-        push(&mut zone, "svc.example.com", RecordType::SVCB, RData::SVCB(SvcbData {
-            priority: 2,
-            target: DnsName::from_str("www.example.com").unwrap(),
-            params: Vec::new(),
-        }));
+        push(
+            &mut zone,
+            "www.example.com",
+            RecordType::A,
+            RData::A("93.184.216.34".parse().unwrap()),
+        );
+        push(
+            &mut zone,
+            "www.example.com",
+            RecordType::AAAA,
+            RData::AAAA("2001:db8::1".parse().unwrap()),
+        );
+        push(
+            &mut zone,
+            "mail.example.com",
+            RecordType::A,
+            RData::A("93.184.216.35".parse().unwrap()),
+        );
+        push(
+            &mut zone,
+            "_sip._tcp.example.com",
+            RecordType::SRV,
+            RData::SRV(SrvData {
+                priority: 10,
+                weight: 60,
+                port: 5060,
+                target: DnsName::from_str("sipserver.example.com").unwrap(),
+            }),
+        );
+        push(
+            &mut zone,
+            "alias.example.com",
+            RecordType::CNAME,
+            RData::CNAME(DnsName::from_str("www.example.com").unwrap()),
+        );
+        push(
+            &mut zone,
+            "svc.example.com",
+            RecordType::HTTPS,
+            RData::HTTPS(SvcbData {
+                priority: 1,
+                target: DnsName::from_str("www.example.com").unwrap(),
+                params: vec![0x00, 0x01, 0x00, 0x03, 0x02, b'h', b'2'],
+            }),
+        );
+        push(
+            &mut zone,
+            "svc.example.com",
+            RecordType::SVCB,
+            RData::SVCB(SvcbData {
+                priority: 2,
+                target: DnsName::from_str("www.example.com").unwrap(),
+                params: Vec::new(),
+            }),
+        );
 
         let catalog = ZoneCatalog::new();
         catalog.insert(zone);

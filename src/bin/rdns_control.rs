@@ -54,7 +54,10 @@ fn main() {
     }
 }
 
-fn send_command(socket_path: &PathBuf, command: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn send_command(
+    socket_path: &PathBuf,
+    command: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut stream = UnixStream::connect(socket_path)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
 

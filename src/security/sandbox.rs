@@ -1,6 +1,6 @@
-/// Platform-specific sandboxing after initialization.
-/// - FreeBSD: Capsicum capability mode
-/// - Linux: seccomp-bpf (stub — requires careful syscall whitelisting)
+//! Platform-specific sandboxing after initialization.
+//! - FreeBSD: Capsicum capability mode
+//! - Linux: seccomp-bpf (stub — requires careful syscall whitelisting)
 
 /// Enter the platform sandbox.
 /// This should be called AFTER all ports are bound and files are opened.

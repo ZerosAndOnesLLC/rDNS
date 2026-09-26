@@ -11,16 +11,14 @@ pub fn drop_privileges(user: &str, group: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let user_cstr =
-        CString::new(user).map_err(|_| anyhow::anyhow!("Invalid user name"))?;
+    let user_cstr = CString::new(user).map_err(|_| anyhow::anyhow!("Invalid user name"))?;
 
     // Look up group and user via NSS
-    let grp = Group::from_name(group)?
-        .ok_or_else(|| anyhow::anyhow!("Group '{}' not found", group))?;
+    let grp =
+        Group::from_name(group)?.ok_or_else(|| anyhow::anyhow!("Group '{}' not found", group))?;
     let gid = grp.gid;
 
-    let pwd = User::from_name(user)?
-        .ok_or_else(|| anyhow::anyhow!("User '{}' not found", user))?;
+    let pwd = User::from_name(user)?.ok_or_else(|| anyhow::anyhow!("User '{}' not found", user))?;
     let uid = pwd.uid;
 
     // Set supplementary groups

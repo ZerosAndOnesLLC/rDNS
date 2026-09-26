@@ -380,7 +380,10 @@ mod tests {
         name.encode_compressed(&mut buf, &mut map);
         assert_eq!(buf, b"\x07example\x03com\x00");
         // Suffixes recorded for later reuse.
-        assert_eq!(map.get(&vec!["example".to_string(), "com".to_string()]), Some(&0));
+        assert_eq!(
+            map.get(&vec!["example".to_string(), "com".to_string()]),
+            Some(&0)
+        );
         assert_eq!(map.get(&vec!["com".to_string()]), Some(&8));
     }
 

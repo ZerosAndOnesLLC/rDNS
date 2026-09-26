@@ -18,11 +18,14 @@ pub struct ForwarderPool {
     inner: Arc<ForwarderPoolInner>,
 }
 
+/// In-flight query awaiting its response: (expected_name, expected_type, sender).
+type PendingQuery = (DnsName, RecordType, oneshot::Sender<Message>);
+
 struct ForwarderPoolInner {
     sockets: Vec<UdpSocket>,
     /// Pending queries waiting for responses, keyed by query ID
     /// Stores (expected_name, expected_type, sender) for QNAME/QTYPE validation
-    pending: Mutex<HashMap<u16, (DnsName, RecordType, oneshot::Sender<Message>)>>,
+    pending: Mutex<HashMap<u16, PendingQuery>>,
     /// Round-robin index for socket selection
     next_socket: std::sync::atomic::AtomicUsize,
 }
@@ -124,7 +127,10 @@ impl ForwarderPool {
         }
 
         // Send the query via round-robin socket selection
-        let idx = self.inner.next_socket.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        let idx = self
+            .inner
+            .next_socket
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % self.inner.sockets.len();
         if let Err(e) = self.inner.sockets[idx].send(&wire).await {
             let mut pending = self.inner.pending.lock().await;
@@ -175,9 +181,10 @@ impl ForwarderPool {
                 match Message::decode(&buf[..len]) {
                     Ok(response) => {
                         // Validate QNAME/QTYPE match to prevent cache poisoning
-                        let valid = response.questions.first().map_or(false, |q| {
-                            q.name == expected_name && q.qtype == expected_type
-                        });
+                        let valid = response
+                            .questions
+                            .first()
+                            .is_some_and(|q| q.name == expected_name && q.qtype == expected_type);
                         if valid {
                             let _ = tx.send(response);
                         } else {
