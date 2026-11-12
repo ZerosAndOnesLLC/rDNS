@@ -4,10 +4,14 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.18.0] - 2026-11-12
 
 ### Added
 - `rdns --version` / `-V` prints the server version.
+
+### Changed
+- Dependencies: `parking_lot` 0.12 → 0.13, `rustls-pki-types` 1.15 → 1.16.
+  Lockfile refreshed (`rustls-webpki` 0.103.17, `errno` 0.3.15).
 
 ## [1.17.25] - 2026-09-26
 
