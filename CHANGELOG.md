@@ -4,6 +4,11 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `rdns --version` / `-V` prints the server version.
+
 ## [1.17.25] - 2026-09-26
 
 ### Changed

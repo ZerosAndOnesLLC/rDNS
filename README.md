@@ -55,6 +55,9 @@ cargo build --release --features postgres
 # Validate config
 ./target/release/rdns -c rdns.toml --check-config
 
+# Print version
+./target/release/rdns --version
+
 # Control
 ./target/release/rdns-control stats
 ./target/release/rdns-control flush-cache
