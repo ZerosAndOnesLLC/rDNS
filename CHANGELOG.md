@@ -4,6 +4,33 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- GitHub Actions CI: fmt, clippy, and tests on Linux (x86_64, aarch64), macOS
+  and FreeBSD 15; MSRV, `cargo-deny`, sqlx migration, Docker and
+  `cargo publish --dry-run` checks.
+- Automated releases: prebuilt tarballs for Linux, macOS and FreeBSD with
+  `SHA256SUMS` and build-provenance attestations; multi-arch GHCR image and
+  crates.io publish when a release is promoted to stable.
+- `rust-version = "1.95"` (MSRV) declared in `Cargo.toml`.
+
+### Fixed
+- macOS builds: privilege drop now sets supplementary groups via
+  `libc::initgroups` on Apple targets, where `nix` doesn't provide it.
+  macOS previously failed to compile.
+- FreeBSD: `cargo clippy -D warnings` is clean (`flock` field casts use the
+  platform `c_short` alias).
+- Tests: the sandbox test now enters the sandbox in a child process. On
+  FreeBSD it previously put the whole test process into Capsicum capability
+  mode, making unrelated tests fail with `ECAPMODE`. It also now asserts that
+  capability mode blocks `open()`.
+- Removed the unused `tokio-test` dev-dependency.
+
+### Security
+- `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()`),
+  pulled in through the optional `postgres` feature.
+
 ## [1.18.0] - 2026-11-12
 
 ### Added

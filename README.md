@@ -1,5 +1,6 @@
 # rDNS
 
+[![CI](https://github.com/ZerosAndOnesLLC/rDNS/actions/workflows/ci.yml/badge.svg)](https://github.com/ZerosAndOnesLLC/rDNS/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ZerosAndOnesLLC/rDNS?label=release&color=blue)](https://github.com/ZerosAndOnesLLC/rDNS/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-ce4218?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -41,6 +42,10 @@ Unbound keeps a latency edge (~75 µs vs ~110 µs); rDNS holds a throughput edge
 Reproduce with `bench/throughput.sh` (peak throughput) or `bench/run.sh` (latency under sustained load). Full methodology, the optimization journey, and single-client figures in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Quick Start
+
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (aarch64, x86_64) and FreeBSD 15 (amd64) are attached to every [release](https://github.com/ZerosAndOnesLLC/rDNS/releases), with a `SHA256SUMS` file and build-provenance attestations (`gh attestation verify <file> --repo ZerosAndOnesLLC/rDNS`). Or install from crates.io with `cargo install rdns-server`.
+
+Building from source requires Rust 1.95 or newer:
 
 ```bash
 # Build
@@ -134,6 +139,14 @@ service rdns start
 
 ### Docker
 
+Multi-arch images (amd64, arm64) are published to GHCR for each stable release:
+
+```bash
+docker run -p 53:53/udp -p 53:53/tcp -v /etc/rdns:/etc/rdns ghcr.io/zerosandonesllc/rdns:latest
+```
+
+Or build locally:
+
 ```bash
 docker build -t rdns .
 docker run -p 53:53/udp -p 53:53/tcp -v /etc/rdns:/etc/rdns rdns
@@ -198,6 +211,25 @@ On CARP failover the new master's rDNS process is already running with the CARP 
 in its listener list (or on `0.0.0.0`). Because rDNS's cache is local to each node,
 clients may see a brief increase in resolver latency on the first query after failover
 (cache miss to upstream), then resume normal cached performance.
+
+## CI and Releases
+
+GitHub Actions (all on GitHub-hosted runners):
+
+- **`ci.yml`** — every PR and push to `main`: `rustfmt`, `clippy -D warnings` (default and `postgres` features), tests on Linux x86_64/aarch64, macOS and FreeBSD 15 (VM), MSRV check (`rust-version` in `Cargo.toml`), `cargo-deny` (advisories, licenses, sources — see `deny.toml`), `sqlx migrate run` against PostgreSQL, a Docker build smoke test, and `cargo publish --dry-run`.
+- **`release.yml`** — on a `v*` tag: verifies the tag matches `Cargo.toml`, builds tarballs for every platform, attests them, and creates the GitHub release as a **pre-release** (notes from `CHANGELOG.md`), or uploads to the release if it already exists.
+- **`publish.yml`** — when a release becomes stable: pushes the multi-arch image to GHCR and publishes to crates.io (trusted publishing).
+
+Cutting a release:
+
+```bash
+# bump version in Cargo.toml + CHANGELOG.md, commit, then:
+git tag -a v1.19.0 -m "rDNS 1.19.0" && git push origin v1.19.0
+# ...CI builds and creates the pre-release. After testing, promote it:
+gh release edit v1.19.0 --prerelease=false --latest
+```
+
+`freebsd/build-local.sh` and `freebsd/release.sh` still work for manual builds.
 
 ## License
 

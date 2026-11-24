@@ -65,9 +65,49 @@ fn apply_linux_hardening() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    const CHILD_ENV: &str = "RDNS_SANDBOX_TEST_CHILD";
+
+    /// Entering the sandbox is irreversible and process-wide — Capsicum
+    /// capability mode blocks every later `open()` in all test threads — so
+    /// the real call runs in a re-executed copy of this test binary.
     #[test]
-    fn test_sandbox_does_not_panic() {
-        // Just verify the function doesn't panic on the test platform
-        let _ = enter_sandbox();
+    fn enter_sandbox_in_child_process() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "security::sandbox::tests::sandbox_child",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("spawn sandbox child");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "sandbox child failed:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "sandbox child test did not run:\n{stdout}"
+        );
+    }
+
+    /// Runs only inside the child spawned above; a no-op in the normal run.
+    #[test]
+    fn sandbox_child() {
+        if std::env::var_os(CHILD_ENV).is_none() {
+            return;
+        }
+        enter_sandbox().expect("enter sandbox");
+
+        #[cfg(target_os = "freebsd")]
+        {
+            let err =
+                std::fs::File::open("/etc/hosts").expect_err("capability mode must block open()");
+            assert_eq!(err.raw_os_error(), Some(libc::ECAPMODE));
+        }
     }
 }

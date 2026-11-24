@@ -1,0 +1,43 @@
+# cargo-deny configuration — run in CI by the `deny` job in .github/workflows/ci.yml.
+# Local: `cargo deny --all-features check`
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any RustSec vulnerability, unmaintained or unsound advisory affecting
+# a crate in the dependency graph. Add an `ignore` entry (with a reason) only
+# when an advisory is confirmed not to apply.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Permissive licenses only — rDNS ships under MIT.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = false
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
