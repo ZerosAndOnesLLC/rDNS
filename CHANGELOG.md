@@ -4,7 +4,7 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.19.0] - 2026-11-24
 
 ### Added
 - GitHub Actions CI: fmt, clippy, and tests on Linux (x86_64, aarch64), macOS
