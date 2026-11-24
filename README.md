@@ -218,7 +218,8 @@ GitHub Actions (all on GitHub-hosted runners):
 
 - **`ci.yml`** — every PR and push to `main`: `rustfmt`, `clippy -D warnings` (default and `postgres` features), tests on Linux x86_64/aarch64, macOS and FreeBSD 15 (VM), MSRV check (`rust-version` in `Cargo.toml`), `cargo-deny` (advisories, licenses, sources — see `deny.toml`), `sqlx migrate run` against PostgreSQL, a Docker build smoke test, and `cargo publish --dry-run`.
 - **`release.yml`** — on a `v*` tag: verifies the tag matches `Cargo.toml`, builds tarballs for every platform, attests them, and creates the GitHub release as a **pre-release** (notes from `CHANGELOG.md`), or uploads to the release if it already exists.
-- **`publish.yml`** — when a release becomes stable: pushes the multi-arch image to GHCR and publishes to crates.io (trusted publishing).
+- **`publish.yml`** — when a release becomes stable: pushes the multi-arch image to GHCR.
+- **`crates-io.yml`** — manual only: publishes a release tag to crates.io (trusted publishing). Runs the tests and a dry-run first, skips versions already published, and has a `dry_run` option.
 
 Cutting a release:
 
@@ -227,6 +228,8 @@ Cutting a release:
 git tag -a v1.19.0 -m "rDNS 1.19.0" && git push origin v1.19.0
 # ...CI builds and creates the pre-release. After testing, promote it:
 gh release edit v1.19.0 --prerelease=false --latest
+# Publish to crates.io when you're ready (separate, manual):
+gh workflow run crates-io.yml -f tag=v1.19.0
 ```
 
 `freebsd/build-local.sh` and `freebsd/release.sh` still work for manual builds.
