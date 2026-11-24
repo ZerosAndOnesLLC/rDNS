@@ -21,6 +21,11 @@ All notable changes to rDNS are documented in this file. The format is based on
   macOS previously failed to compile.
 - FreeBSD: `cargo clippy -D warnings` is clean (`flock` field casts use the
   platform `c_short` alias).
+- Tests: the sandbox test now enters the sandbox in a child process. On
+  FreeBSD it previously put the whole test process into Capsicum capability
+  mode, making unrelated tests fail with `ECAPMODE`. It also now asserts that
+  capability mode blocks `open()`.
+- Removed the unused `tokio-test` dev-dependency.
 
 ### Security
 - `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()`),

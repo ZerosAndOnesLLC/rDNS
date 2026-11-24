@@ -50,9 +50,6 @@ lto = "fat"
 codegen-units = 1
 opt-level = 3
 
-[dev-dependencies]
-tokio-test = "0.4"
-
 [features]
 default = []
 postgres = ["dep:sqlx"]
