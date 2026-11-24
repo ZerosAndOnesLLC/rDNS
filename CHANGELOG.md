@@ -4,6 +4,21 @@ All notable changes to rDNS are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- GitHub Actions CI: fmt, clippy, and tests on Linux (x86_64, aarch64), macOS
+  and FreeBSD 15; MSRV, `cargo-deny`, sqlx migration, Docker and
+  `cargo publish --dry-run` checks.
+- Automated releases: prebuilt tarballs for Linux, macOS and FreeBSD with
+  `SHA256SUMS` and build-provenance attestations; multi-arch GHCR image and
+  crates.io publish when a release is promoted to stable.
+- `rust-version = "1.95"` (MSRV) declared in `Cargo.toml`.
+
+### Security
+- `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()`),
+  pulled in through the optional `postgres` feature.
+
 ## [1.18.0] - 2026-11-12
 
 ### Added
