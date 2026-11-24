@@ -11,8 +11,10 @@ All notable changes to rDNS are documented in this file. The format is based on
   and FreeBSD 15; MSRV, `cargo-deny`, sqlx migration, Docker and
   `cargo publish --dry-run` checks.
 - Automated releases: prebuilt tarballs for Linux, macOS and FreeBSD with
-  `SHA256SUMS` and build-provenance attestations; multi-arch GHCR image and
-  crates.io publish when a release is promoted to stable.
+  `SHA256SUMS` and build-provenance attestations; multi-arch GHCR image when
+  a release is promoted to stable.
+- Manual crates.io publish workflow (`crates-io.yml`) using trusted
+  publishing, with a dry-run option.
 - `rust-version = "1.95"` (MSRV) declared in `Cargo.toml`.
 
 ### Fixed
