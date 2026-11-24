@@ -202,10 +202,14 @@ jobs:
             echo "Release $TAG exists — uploading assets"
             gh release upload "$TAG" out/* --clobber
           else
+            # Created as a pre-release in one call — never published as a full
+            # release first — so it doesn't fire stable-release notifications
+            # or the publish workflow.
             echo "Creating pre-release $TAG"
             gh release create "$TAG" out/* \
               --verify-tag \
               --prerelease \
+              --latest=false \
               --title "rDNS v${VERSION}" \
               --notes-file notes.md
           fi
