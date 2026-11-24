@@ -15,6 +15,13 @@ All notable changes to rDNS are documented in this file. The format is based on
   crates.io publish when a release is promoted to stable.
 - `rust-version = "1.95"` (MSRV) declared in `Cargo.toml`.
 
+### Fixed
+- macOS builds: privilege drop now sets supplementary groups via
+  `libc::initgroups` on Apple targets, where `nix` doesn't provide it.
+  macOS previously failed to compile.
+- FreeBSD: `cargo clippy -D warnings` is clean (`flock` field casts use the
+  platform `c_short` alias).
+
 ### Security
 - `url` 2.5.8 → 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()`),
   pulled in through the optional `postgres` feature.

@@ -22,8 +22,26 @@ pub fn drop_privileges(user: &str, group: &str) -> anyhow::Result<()> {
     let uid = pwd.uid;
 
     // Set supplementary groups
+    #[cfg(not(target_vendor = "apple"))]
     nix::unistd::initgroups(&user_cstr, gid)
         .map_err(|e| anyhow::anyhow!("Failed to set supplementary groups: {}", e))?;
+
+    // nix doesn't expose initgroups/setgroups on Apple targets, so call libc
+    // directly. macOS takes the base group as a c_int.
+    #[cfg(target_vendor = "apple")]
+    {
+        let base_gid = nix::libc::c_int::try_from(gid.as_raw())
+            .map_err(|_| anyhow::anyhow!("Group '{}' gid out of range", group))?;
+        // SAFETY: `user_cstr` is a valid NUL-terminated C string that outlives
+        // the call; initgroups only reads it and has no other preconditions.
+        let rc = unsafe { nix::libc::initgroups(user_cstr.as_ptr(), base_gid) };
+        if rc != 0 {
+            anyhow::bail!(
+                "Failed to set supplementary groups: {}",
+                nix::errno::Errno::last()
+            );
+        }
+    }
 
     // Set GID first (must be done before dropping UID)
     #[cfg(target_os = "linux")]
