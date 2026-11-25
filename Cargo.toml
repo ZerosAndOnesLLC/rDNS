@@ -24,7 +24,6 @@ path = "src/bin/rdns_control.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-bytes = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
