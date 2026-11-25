@@ -143,8 +143,8 @@ jobs:
           key: sqlx-cli
       - name: Install sqlx-cli
         run: |
-          if ! sqlx --version 2>/dev/null | grep -q ' 0\.9\.0'; then
-            cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+          if ! sqlx --version 2>/dev/null | grep -q ' 0\.9\.1'; then
+            cargo install sqlx-cli --version 0.9.1 --locked --no-default-features --features postgres,rustls
           fi
       - name: sqlx migrate run
         run: sqlx migrate run --source migrations
