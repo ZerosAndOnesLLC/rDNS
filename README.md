@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ZerosAndOnesLLC/rDNS/actions/workflows/ci.yml/badge.svg)](https://github.com/ZerosAndOnesLLC/rDNS/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ZerosAndOnesLLC/rDNS?label=release&color=blue)](https://github.com/ZerosAndOnesLLC/rDNS/releases)
+[![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/rkgcbQW93)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-ce4218?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20FreeBSD%20%7C%20macOS-informational)](#deployment)
@@ -233,6 +234,14 @@ gh workflow run crates-io.yml -f tag=v1.19.0
 ```
 
 `freebsd/build-local.sh` and `freebsd/release.sh` still work for manual builds.
+
+## Community
+
+Questions, ideas, or want to show what you're running rDNS on? Join the
+[Zeros and Ones Discord](https://discord.gg/rkgcbQW93). Bugs and feature requests go in
+[GitHub issues](https://github.com/ZerosAndOnesLLC/rDNS/issues). See
+[CONTRIBUTING.md](CONTRIBUTING.md) to get involved, and
+[SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
