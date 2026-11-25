@@ -37,7 +37,7 @@ tokio-rustls = "0.26"
 rustls-pki-types = { version = "1.16", features = ["std"] }
 libc = "0.2"
 parking_lot = "0.13"
-nix = { version = "0.31", features = ["socket", "uio", "net", "user", "process", "fs"] }
+nix = { version = "0.32", features = ["socket", "uio", "net", "user", "process", "fs"] }
 socket2 = { version = "0.6", features = ["all"] }
 getrandom = "0.4"
 arc-swap = "1"

@@ -28,7 +28,7 @@ can agree on the approach.
 - Linux, macOS or FreeBSD
 - Optional, for the PostgreSQL backend: PostgreSQL and
   [`sqlx-cli`](https://crates.io/crates/sqlx-cli) 0.9
-  (`cargo install sqlx-cli --version 0.9.0 --no-default-features --features postgres,rustls`)
+  (`cargo install sqlx-cli --version 0.9.1 --no-default-features --features postgres,rustls`)
 
 **Build and run**
 
