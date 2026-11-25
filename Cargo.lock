@@ -1081,7 +1081,6 @@ version = "1.19.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "bytes",
  "clap",
  "dashmap",
  "getrandom 0.4.3",
