@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and discussion
+    url: https://discord.gg/rkgcbQW93
+    about: Ask questions and talk to the maintainers and other users on the Zeros and Ones Discord.
+  - name: Report a security vulnerability
+    url: https://github.com/ZerosAndOnesLLC/rDNS/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue. See SECURITY.md.

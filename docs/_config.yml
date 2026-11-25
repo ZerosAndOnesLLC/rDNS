@@ -8,6 +8,9 @@ url: "https://zerosandonesllc.github.io"
 baseurl: "/rDNS"
 repository: ZerosAndOnesLLC/rDNS
 
+# Community Discord invite. Must be a never-expiring invite.
+discord: "https://discord.gg/rkgcbQW93"
+
 permalink: pretty
 
 version: "1.17.5"
@@ -22,6 +25,7 @@ twitter:
 social:
   links:
     - https://github.com/ZerosAndOnesLLC/rDNS
+    - https://discord.gg/rkgcbQW93
 
 plugins:
   - jekyll-sitemap
